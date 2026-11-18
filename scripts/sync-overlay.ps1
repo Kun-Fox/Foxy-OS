@@ -16,6 +16,9 @@ $files = @(
     'main/boards/m5stack/core-s3/foxy_ui.cc',
     'main/boards/m5stack/core-s3/m5stack_core_s3.cc',
     'main/display/lcd_display.cc',
+    'main/display/display.h',
+    'main/mcp_server.cc',
+    'main/audio/audio_codec.cc',
     'main/application.cc',
     'main/application.h',
     'main/protocols/protocol.cc'

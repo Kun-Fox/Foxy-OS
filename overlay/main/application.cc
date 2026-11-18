@@ -755,6 +755,14 @@ void Application::InitializeProtocol() {
                     display->SetEmotion(emotion_str.c_str());
                 });
             }
+        } else if (strcmp(type->valuestring, "foxy") == 0) {
+            // Foxy: 设备端首页消息卡（邮件/QQ/任务进度等推送）
+            auto message = cJSON_GetObjectItem(root, "message");
+            if (cJSON_IsString(message)) {
+                Schedule([display, text = std::string(message->valuestring)]() {
+                    display->ShowMessageCard(text);
+                });
+            }
         } else if (strcmp(type->valuestring, "mcp") == 0) {
             auto payload = cJSON_GetObjectItem(root, "payload");
             if (cJSON_IsObject(payload)) {

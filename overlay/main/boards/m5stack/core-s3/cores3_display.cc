@@ -59,6 +59,10 @@ void CoreS3LcdDisplay::TouchPress(int x, int y) {
     FoxyUI::Get().OnPress(x, y);
 }
 
+void CoreS3LcdDisplay::ShowMessageCard(const std::string& text) {
+    FoxyUI::Get().PushMessage(text);
+}
+
 void CoreS3LcdDisplay::BuildControlBar() {
     DisplayLockGuard lock(this);
     auto lvgl_theme = static_cast<LvglTheme*>(current_theme_);
@@ -163,7 +167,9 @@ void CoreS3LcdDisplay::ChangeVolume(int delta) {
     } else if (volume > 100) {
         volume = 100;
     }
+    // 0 表示静音：先写入 0，再关输出
     codec->SetOutputVolume(volume);
+    codec->EnableOutput(volume > 0);
     ESP_LOGI(TAG, "volume -> %d", volume);
     if (info_panel_ != nullptr && !lv_obj_has_flag(info_panel_, LV_OBJ_FLAG_HIDDEN)) {
         UpdateInfoText();

@@ -15,6 +15,9 @@ public:
 
     void SetupUI() override;
 
+    // 服务器推送的消息卡
+    void ShowMessageCard(const std::string& text) override;
+
     // 按下时记录起点（供分页滑动判定）
     void TouchPress(int x, int y);
 
