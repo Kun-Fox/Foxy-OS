@@ -1,5 +1,5 @@
 diff --git a/main/application.cc b/main/application.cc
-index 300a36c..0d69593 100644
+index 300a36c..f39a717 100644
 --- a/main/application.cc
 +++ b/main/application.cc
 @@ -22,6 +22,10 @@
@@ -45,7 +45,25 @@ index 300a36c..0d69593 100644
      if (clock_timer_handle_ != nullptr) {
          esp_timer_stop(clock_timer_handle_);
          esp_timer_delete(clock_timer_handle_);
-@@ -202,11 +227,20 @@ void Application::Run() {
+@@ -61,7 +86,16 @@ Application::~Application() {
+     vEventGroupDelete(event_group_);
+ }
+ 
+-bool Application::SetDeviceState(DeviceState state) { return state_machine_.TransitionTo(state); }
++bool Application::SetDeviceState(DeviceState state) {
++    bool ok = state_machine_.TransitionTo(state);
++    if (ok) {
++        // Foxy: 任何非 Idle 状态都点亮屏幕（退出息屏），回到 Idle 再允许省电
++        auto& board = Board::GetInstance();
++        board.SetPowerSaveLevel(state == kDeviceStateIdle ? PowerSaveLevel::LOW_POWER
++                                                          : PowerSaveLevel::PERFORMANCE);
++    }
++    return ok;
++}
+ 
+ void Application::Initialize() {
+     auto& board = Board::GetInstance();
+@@ -202,11 +236,20 @@ void Application::Run() {
          MAIN_EVENT_NETWORK_CONNECTED | MAIN_EVENT_NETWORK_DISCONNECTED | MAIN_EVENT_TOGGLE_CHAT |
          MAIN_EVENT_START_LISTENING | MAIN_EVENT_STOP_LISTENING | MAIN_EVENT_ACTIVATION_DONE |
          MAIN_EVENT_STATE_CHANGED | MAIN_EVENT_PLAYBACK_DRAINED | MAIN_EVENT_STARTUP_HINT_TIMEOUT |
@@ -67,7 +85,7 @@ index 300a36c..0d69593 100644
          if (bits & MAIN_EVENT_ERROR) {
              if (GetDeviceState() == kDeviceStateNotifying) {
                  StopNotification();
-@@ -622,6 +656,10 @@ void Application::InitializeProtocol() {
+@@ -622,6 +665,10 @@ void Application::InitializeProtocol() {
              ESP_LOGW(TAG, "Incoming JSON message has no type");
              return;
          }
@@ -78,7 +96,7 @@ index 300a36c..0d69593 100644
          if (strcmp(type->valuestring, "notify") == 0) {
              auto audio_url = cJSON_GetObjectItem(root, "audio_url");
              if (!cJSON_IsString(audio_url) || audio_url->valuestring[0] == '\0') {
-@@ -671,7 +709,11 @@ void Application::InitializeProtocol() {
+@@ -671,7 +718,11 @@ void Application::InitializeProtocol() {
                          if (listening_mode_ == kListeningModeManualStop) {
                              SetDeviceState(kDeviceStateIdle);
                          } else {
@@ -91,7 +109,7 @@ index 300a36c..0d69593 100644
                          }
                      }
                  });
-@@ -713,6 +755,14 @@ void Application::InitializeProtocol() {
+@@ -713,6 +764,14 @@ void Application::InitializeProtocol() {
                      display->SetEmotion(emotion_str.c_str());
                  });
              }
@@ -106,7 +124,7 @@ index 300a36c..0d69593 100644
          } else if (strcmp(type->valuestring, "mcp") == 0) {
              auto payload = cJSON_GetObjectItem(root, "payload");
              if (cJSON_IsObject(payload)) {
-@@ -809,6 +859,33 @@ void Application::DismissAlert() {
+@@ -809,6 +868,33 @@ void Application::DismissAlert() {
      }
  }
  
@@ -140,7 +158,7 @@ index 300a36c..0d69593 100644
  void Application::ToggleChatState() { xEventGroupSetBits(event_group_, MAIN_EVENT_TOGGLE_CHAT); }
  
  void Application::StartListening() { xEventGroupSetBits(event_group_, MAIN_EVENT_START_LISTENING); }
-@@ -1033,6 +1110,10 @@ void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
+@@ -1033,6 +1119,10 @@ void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
  void Application::HandleStateChangedEvent() {
      DeviceState new_state = state_machine_.GetState();
      clock_ticks_ = 0;
@@ -151,7 +169,7 @@ index 300a36c..0d69593 100644
      // Any state change invalidates a pending deferred listening start;
      // the Listening case below re-arms it when needed.
      pending_listening_start_ = false;
-@@ -1056,6 +1137,9 @@ void Application::HandleStateChangedEvent() {
+@@ -1056,6 +1146,9 @@ void Application::HandleStateChangedEvent() {
              }
              audio_service_.EnableVoiceProcessing(false);
              audio_service_.EnableWakeWordDetection(true);
@@ -161,6 +179,19 @@ index 300a36c..0d69593 100644
              break;
          case kDeviceStateConnecting:
              display->SetStatus(Lang::Strings::CONNECTING);
+@@ -1408,10 +1501,8 @@ bool Application::CanEnterSleepMode() {
+         return false;
+     }
+ 
+-    if (protocol_ && protocol_->IsAudioChannelOpened()) {
+-        return false;
+-    }
+-
++    // Foxy: 待命常连模式下通道会一直开着，不能因此禁止息屏。
++    // 只要设备处于 Idle 且音频空闲，就允许关屏省电（通道保持，随时可被唤醒）。
+     if (!audio_service_.IsIdle()) {
+         return false;
+     }
 diff --git a/main/application.h b/main/application.h
 index 866c2a7..f344ae1 100644
 --- a/main/application.h
@@ -214,7 +245,7 @@ index 03e2baa..b28ad6c 100644
  
 diff --git a/main/boards/m5stack/core-s3/cores3_display.cc b/main/boards/m5stack/core-s3/cores3_display.cc
 new file mode 100644
-index 0000000..eda6db1
+index 0000000..cac1ad4
 --- /dev/null
 +++ b/main/boards/m5stack/core-s3/cores3_display.cc
 @@ -0,0 +1,310 @@
@@ -238,7 +269,7 @@ index 0000000..eda6db1
 +#define TAG "CoreS3Display"
 +
 +// 临时性能探针：每 6 秒强制整屏重绘一次，打印耗时（决定滑动动画预算）
-+#define FOXY_FPS_PROBE 1
++#define FOXY_FPS_PROBE 0
 +
 +namespace {
 +constexpr int kBarHeight = 42;
@@ -1116,10 +1147,10 @@ index 0000000..7a4d45e
 +    int brightness_ = 100;
 +};
 diff --git a/main/boards/m5stack/core-s3/m5stack_core_s3.cc b/main/boards/m5stack/core-s3/m5stack_core_s3.cc
-index 83d1259..fb0499e 100644
+index 83d1259..de810de 100644
 --- a/main/boards/m5stack/core-s3/m5stack_core_s3.cc
 +++ b/main/boards/m5stack/core-s3/m5stack_core_s3.cc
-@@ -1,6 +1,7 @@
+@@ -1,9 +1,11 @@
  #include "wifi_board.h"
  #include "cores3_audio_codec.h"
  #include "display/lcd_display.h"
@@ -1127,7 +1158,11 @@ index 83d1259..fb0499e 100644
  #include "application.h"
  #include "config.h"
  #include "power_save_timer.h"
-@@ -122,16 +123,18 @@ private:
++#include "settings.h"
+ #include "i2c_device.h"
+ #include "axp2101.h"
+ 
+@@ -122,16 +124,25 @@ private:
      Pmic* pmic_;
      Aw9523* aw9523_;
      Ft6336* ft6336_;
@@ -1141,6 +1176,13 @@ index 83d1259..fb0499e 100644
  
      void InitializePowerSaveTimer() {
          power_save_timer_ = new PowerSaveTimer(-1, 60, 300);
++        {
++            // 开机打印休眠配置，方便确认 NVS 是否写进去了
++            Settings ps("wifi", false);
++            ESP_LOGI(TAG, "power cfg: sleep_mode=%d dim_min=%d off_min=%d",
++                     ps.GetInt("sleep_mode", 1), ps.GetInt("sleep_dim_min", -1),
++                     ps.GetInt("sleep_off_min", -1));
++        }
          power_save_timer_->OnEnterSleepMode([this]() {
              GetDisplay()->SetPowerSaveMode(true);
 -            GetBacklight()->SetBrightness(10);
@@ -1148,7 +1190,7 @@ index 83d1259..fb0499e 100644
          });
          power_save_timer_->OnExitSleepMode([this]() {
              GetDisplay()->SetPowerSaveMode(false);
-@@ -204,6 +207,12 @@ private:
+@@ -204,6 +215,12 @@ private:
          if (touch_point.num > 0 && !was_touched) {
              was_touched = true;
              touch_start_time = esp_timer_get_time() / 1000; // 转换为毫秒
@@ -1161,7 +1203,7 @@ index 83d1259..fb0499e 100644
          } 
          // 检测触摸释放
          else if (touch_point.num == 0 && was_touched) {
-@@ -217,6 +226,10 @@ private:
+@@ -217,6 +234,10 @@ private:
                      EnterWifiConfigMode();
                      return;
                  }
@@ -1172,7 +1214,7 @@ index 83d1259..fb0499e 100644
                  app.ToggleChatState();
              }
          }
-@@ -264,7 +277,7 @@ private:
+@@ -264,7 +285,7 @@ private:
          io_config.cs_gpio_num = GPIO_NUM_3;
          io_config.dc_gpio_num = GPIO_NUM_35;
          io_config.spi_mode = 2;
@@ -1181,7 +1223,7 @@ index 83d1259..fb0499e 100644
          io_config.trans_queue_depth = 10;
          io_config.lcd_cmd_bits = 8;
          io_config.lcd_param_bits = 8;
-@@ -285,7 +298,7 @@ private:
+@@ -285,7 +306,7 @@ private:
          esp_lcd_panel_swap_xy(panel, DISPLAY_SWAP_XY);
          esp_lcd_panel_mirror(panel, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y);
  

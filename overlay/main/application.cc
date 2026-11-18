@@ -86,7 +86,16 @@ Application::~Application() {
     vEventGroupDelete(event_group_);
 }
 
-bool Application::SetDeviceState(DeviceState state) { return state_machine_.TransitionTo(state); }
+bool Application::SetDeviceState(DeviceState state) {
+    bool ok = state_machine_.TransitionTo(state);
+    if (ok) {
+        // Foxy: 任何非 Idle 状态都点亮屏幕（退出息屏），回到 Idle 再允许省电
+        auto& board = Board::GetInstance();
+        board.SetPowerSaveLevel(state == kDeviceStateIdle ? PowerSaveLevel::LOW_POWER
+                                                          : PowerSaveLevel::PERFORMANCE);
+    }
+    return ok;
+}
 
 void Application::Initialize() {
     auto& board = Board::GetInstance();
@@ -1492,10 +1501,8 @@ bool Application::CanEnterSleepMode() {
         return false;
     }
 
-    if (protocol_ && protocol_->IsAudioChannelOpened()) {
-        return false;
-    }
-
+    // Foxy: 待命常连模式下通道会一直开着，不能因此禁止息屏。
+    // 只要设备处于 Idle 且音频空闲，就允许关屏省电（通道保持，随时可被唤醒）。
     if (!audio_service_.IsIdle()) {
         return false;
     }

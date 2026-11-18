@@ -5,6 +5,7 @@
 #include "application.h"
 #include "config.h"
 #include "power_save_timer.h"
+#include "settings.h"
 #include "i2c_device.h"
 #include "axp2101.h"
 
@@ -132,6 +133,13 @@ private:
 
     void InitializePowerSaveTimer() {
         power_save_timer_ = new PowerSaveTimer(-1, 60, 300);
+        {
+            // 开机打印休眠配置，方便确认 NVS 是否写进去了
+            Settings ps("wifi", false);
+            ESP_LOGI(TAG, "power cfg: sleep_mode=%d dim_min=%d off_min=%d",
+                     ps.GetInt("sleep_mode", 1), ps.GetInt("sleep_dim_min", -1),
+                     ps.GetInt("sleep_off_min", -1));
+        }
         power_save_timer_->OnEnterSleepMode([this]() {
             GetDisplay()->SetPowerSaveMode(true);
             GetBacklight()->SetBrightness(0);

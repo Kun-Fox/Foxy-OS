@@ -47,3 +47,10 @@
 2. 应用页另外两张卡片（应用、工具）还是占位。
 3. 阶段 3 消息通道已通，但只有本地网页能推；接 QQ/邮箱需要再写一个轮询进程。
 4. 音乐、小说、相机、计算器未做。
+
+### 补充（04:55）息屏链路修通
+- `CanEnterSleepMode()` 原来因"通道已开"直接返回 false → 待命常连时永远不熄屏。删除该判断后：
+  - 63.1 s 无操作 → `Enabling power save mode`（背光 0）
+  - 68.7 s 收到网页文本 → `idle -> speaking` + `Exiting power save mode`（屏幕亮起）
+- `SetDeviceState` 现在统一处理：非 Idle → PERFORMANCE（顺带唤醒屏幕），Idle → LOW_POWER。
+- 关掉了 `FOXY_FPS_PROBE`（不再每 6 秒强制全屏重绘），空闲 SRAM 103.7 KB。

@@ -18,7 +18,7 @@ LV_FONT_DECLARE(BUILTIN_TEXT_FONT);
 #define TAG "CoreS3Display"
 
 // 临时性能探针：每 6 秒强制整屏重绘一次，打印耗时（决定滑动动画预算）
-#define FOXY_FPS_PROBE 1
+#define FOXY_FPS_PROBE 0
 
 namespace {
 constexpr int kBarHeight = 42;

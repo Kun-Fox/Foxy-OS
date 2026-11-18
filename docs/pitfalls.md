@@ -71,3 +71,12 @@
 ## 15. 开机日志抓不到 FoxyUI 初始化
 - UI 在 ~650ms 就初始化完了，串口晚开就错过
 - **做法**：sptool --after hard-reset flash-id 之后立刻开串口（DTR/RTS 置 False），能抓全
+
+## 11. 息屏与待命通道互相打架（2026-11-19 修）
+现象：NVS 写了 `sleep_mode=1/sleep_dim_min=1`，但屏幕永不熄。
+原因：`Application::CanEnterSleepMode()` 里有 `if (protocol_->IsAudioChannelOpened()) return false;`，而待命常连模式下通道永远开着。
+修法：删掉该判断（只保留"非 Idle 或音频忙则不睡"）；并在 `SetDeviceState` 里对非 Idle 状态调 `SetPowerSaveLevel(PERFORMANCE)`（触发 `PowerSaveTimer::WakeUp` 点亮屏幕）、Idle 时回 `LOW_POWER`。
+验证日志：`I (63164) PowerSaveTimer: Enabling power save mode` → 68.7 s 时收到文本 `idle -> speaking` + `Exiting power save mode`。
+
+## 12. 调试探针要能关
+`FOXY_FPS_PROBE` 开着会让每 6 秒强制整屏重绘，白白发热耗电，还掩盖真实功耗表现。默认必须为 0。
