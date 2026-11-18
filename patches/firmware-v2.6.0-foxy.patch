@@ -182,8 +182,673 @@ index 866c2a7..f344ae1 100644
      DeviceStateMachine state_machine_;
      ListeningMode listening_mode_ = kListeningModeAutoStop;
      AecMode aec_mode_ = kAecOff;
+diff --git a/main/boards/m5stack/core-s3/cores3_display.cc b/main/boards/m5stack/core-s3/cores3_display.cc
+new file mode 100644
+index 0000000..d3a7d7f
+--- /dev/null
++++ b/main/boards/m5stack/core-s3/cores3_display.cc
+@@ -0,0 +1,304 @@
++#include "cores3_display.h"
++
++#include "application.h"
++#include "display/lvgl_display/lvgl_theme.h"
++#include "foxy_ui.h"
++#include "board.h"
++
++#include <esp_log.h>
++#include <esp_netif.h>
++#include <esp_timer.h>
++#include <freertos/FreeRTOS.h>
++#include <freertos/task.h>
++#include <lvgl.h>
++#include <cstdio>
++
++LV_FONT_DECLARE(BUILTIN_TEXT_FONT);
++
++#define TAG "CoreS3Display"
++
++// 临时性能探针：每 6 秒强制整屏重绘一次，打印耗时（决定滑动动画预算）
++#define FOXY_FPS_PROBE 1
++
++namespace {
++constexpr int kBarHeight = 42;
++constexpr int kButtonCount = 5;
++constexpr int kStatusTapHeight = 26;
++CoreS3LcdDisplay* g_refresh_instance = nullptr;
++const lv_font_t* g_bar_font = nullptr;
++}  // namespace
++
++#if FOXY_FPS_PROBE
++static void FpsProbeTask(void* arg) {
++    auto* display = static_cast<CoreS3LcdDisplay*>(arg);
++    vTaskDelay(pdMS_TO_TICKS(5000));
++    while (true) {
++        int64_t t0 = esp_timer_get_time();
++        {
++            DisplayLockGuard lock(display);
++            lv_obj_invalidate(lv_screen_active());
++            lv_refr_now(lv_display_get_default());
++        }
++        int64_t t1 = esp_timer_get_time();
++        ESP_LOGI(TAG, "PROBE full_refresh_ms=%.1f", (t1 - t0) / 1000.0);
++        vTaskDelay(pdMS_TO_TICKS(6000));
++    }
++}
++#endif
++
++void CoreS3LcdDisplay::SetupUI() {
++    SpiLcdDisplay::SetupUI();
++    BuildControlBar();
++    FoxyUI::Get().Init(this);
++#if FOXY_FPS_PROBE
++    xTaskCreate(FpsProbeTask, "fps_probe", 16384, this, 2, nullptr);
++#endif
++}
++
++void CoreS3LcdDisplay::TouchPress(int x, int y) {
++    FoxyUI::Get().OnPress(x, y);
++}
++
++void CoreS3LcdDisplay::BuildControlBar() {
++    DisplayLockGuard lock(this);
++    auto lvgl_theme = static_cast<LvglTheme*>(current_theme_);
++    const lv_font_t* bar_font = &BUILTIN_TEXT_FONT;
++    g_bar_font = bar_font;
++    if (lvgl_theme != nullptr) {
++        auto font_holder = lvgl_theme->text_font();
++        if (font_holder != nullptr && font_holder->font() != nullptr) {
++            bar_font = font_holder->font();
++        }
++    }
++    ESP_LOGI(TAG, "control bar font=%p", (const void*)bar_font);
++    g_bar_font = bar_font;
++    auto screen = lv_screen_active();
++
++    // 字幕原本贴底，往上挪一条控制条的高度
++    if (bottom_bar_ != nullptr) {
++        lv_obj_align(bottom_bar_, LV_ALIGN_BOTTOM_MID, 0, -kBarHeight);
++    }
++
++    bar_ = lv_obj_create(screen);
++    lv_obj_set_size(bar_, LV_HOR_RES, kBarHeight);
++    lv_obj_set_style_radius(bar_, 0, 0);
++    lv_obj_set_style_border_width(bar_, 0, 0);
++    lv_obj_set_style_pad_all(bar_, 3, 0);
++    lv_obj_set_style_pad_column(bar_, 4, 0);
++    lv_obj_set_style_bg_color(bar_, lvgl_theme->background_color(), 0);
++    lv_obj_set_style_bg_opa(bar_, LV_OPA_90, 0);
++    lv_obj_set_flex_flow(bar_, LV_FLEX_FLOW_ROW);
++    lv_obj_set_flex_align(bar_, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER,
++                          LV_FLEX_ALIGN_CENTER);
++    lv_obj_set_scrollbar_mode(bar_, LV_SCROLLBAR_MODE_OFF);
++    lv_obj_align(bar_, LV_ALIGN_BOTTOM_MID, 0, 0);
++
++    const char* labels[kButtonCount] = {"对话", "静音", "音-", "音+", "信息"};
++    lv_obj_t** slots[kButtonCount] = {&talk_label_, &mute_label_, nullptr, nullptr, nullptr};
++    for (int i = 0; i < kButtonCount; i++) {
++        lv_obj_t* btn = lv_obj_create(bar_);
++        lv_obj_set_size(btn, (LV_HOR_RES - 6 - 4 * (kButtonCount - 1)) / kButtonCount, kBarHeight - 6);
++        lv_obj_set_style_radius(btn, 6, 0);
++        lv_obj_set_style_border_width(btn, 1, 0);
++        lv_obj_set_style_border_color(btn, lvgl_theme->border_color(), 0);
++        lv_obj_set_style_bg_color(btn, lvgl_theme->background_color(), 0);
++        lv_obj_set_style_bg_opa(btn, LV_OPA_40, 0);
++        lv_obj_set_style_pad_all(btn, 0, 0);
++        lv_obj_set_scrollbar_mode(btn, LV_SCROLLBAR_MODE_OFF);
++        lv_obj_clear_flag(btn, LV_OBJ_FLAG_CLICKABLE);  // 触摸由 HandleTouch 统一处理
++        buttons_[i] = btn;
++
++        lv_obj_t* label = lv_label_create(btn);
++        lv_label_set_text(label, labels[i]);
++        lv_obj_align(label, LV_ALIGN_CENTER, 0, 0);
++        if (slots[i] != nullptr) {
++            *slots[i] = label;
++        }
++    }
++
++    RefreshControlBar();
++
++    g_refresh_instance = this;
++    lv_timer_create(RefreshTimerCb, 700, nullptr);
++    ESP_LOGI(TAG, "control bar ready");
++}
++
++void CoreS3LcdDisplay::RefreshControlBar() {
++    auto state = Application::GetInstance().GetDeviceState();
++    if (talk_label_ != nullptr) {
++        bool busy = (state == kDeviceStateListening || state == kDeviceStateSpeaking ||
++                     state == kDeviceStateConnecting);
++        lv_label_set_text(talk_label_, busy ? "停止" : "对话");
++    }
++    if (mute_label_ != nullptr) {
++        lv_label_set_text(mute_label_, speaker_muted_ ? "开声音" : "静音");
++    }
++}
++
++void CoreS3LcdDisplay::RefreshTimerCb(lv_timer_t* timer) {
++    (void)timer;
++    if (g_refresh_instance != nullptr) {
++        g_refresh_instance->RefreshControlBar();
++    }
++}
++
++void CoreS3LcdDisplay::ToggleSpeakerMute() {
++    speaker_muted_ = !speaker_muted_;
++    auto codec = Board::GetInstance().GetAudioCodec();
++    if (codec != nullptr) {
++        codec->EnableOutput(!speaker_muted_);
++    }
++    ESP_LOGI(TAG, "speaker muted=%d", speaker_muted_);
++    RefreshControlBar();
++}
++
++void CoreS3LcdDisplay::ChangeVolume(int delta) {
++    auto codec = Board::GetInstance().GetAudioCodec();
++    if (codec == nullptr) {
++        return;
++    }
++    int volume = codec->output_volume() + delta;
++    if (volume < 0) {
++        volume = 0;
++    } else if (volume > 100) {
++        volume = 100;
++    }
++    codec->SetOutputVolume(volume);
++    ESP_LOGI(TAG, "volume -> %d", volume);
++    if (info_panel_ != nullptr && !lv_obj_has_flag(info_panel_, LV_OBJ_FLAG_HIDDEN)) {
++        UpdateInfoText();
++    }
++}
++
++void CoreS3LcdDisplay::UpdateInfoText() {
++    if (info_label_ == nullptr) {
++        return;
++    }
++    int level = 0;
++    bool charging = false;
++    bool discharging = false;
++    Board::GetInstance().GetBatteryLevel(level, charging, discharging);
++
++    char ip[32] = "未连接";
++    esp_netif_t* netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
++    if (netif != nullptr) {
++        esp_netif_ip_info_t info;
++        if (esp_netif_get_ip_info(netif, &info) == ESP_OK && info.ip.addr != 0) {
++            snprintf(ip, sizeof(ip), IPSTR, IP2STR(&info.ip));
++        }
++    }
++
++    int volume = 0;
++    auto codec = Board::GetInstance().GetAudioCodec();
++    if (codec != nullptr) {
++        volume = codec->output_volume();
++    }
++
++    const char* state_text = "待命";
++    switch (Application::GetInstance().GetDeviceState()) {
++        case kDeviceStateListening:
++            state_text = "在听";
++            break;
++        case kDeviceStateSpeaking:
++            state_text = "在说";
++            break;
++        case kDeviceStateConnecting:
++            state_text = "连接中";
++            break;
++        case kDeviceStateWifiConfiguring:
++            state_text = "配网";
++            break;
++        default:
++            break;
++    }
++
++    char text[256];
++    snprintf(text, sizeof(text),
++             "电池  %d%%%s\n电量  %s\n音量  %d%s\nIP     %s\n状态  %s\n\n点一下屏幕关闭",
++             level, charging ? " (充电中)" : "", discharging ? "放电" : "供电", volume,
++             speaker_muted_ ? " (静音)" : "", ip, state_text);
++    lv_label_set_text(info_label_, text);
++}
++
++void CoreS3LcdDisplay::ToggleInfoPanel() {
++    DisplayLockGuard lock(this);
++    LvglTheme* lvgl_theme = static_cast<LvglTheme*>(current_theme_);
++    if (info_panel_ == nullptr) {
++        info_panel_ = lv_obj_create(lv_screen_active());
++        lv_obj_set_size(info_panel_, LV_HOR_RES, LV_VER_RES);
++        lv_obj_set_style_radius(info_panel_, 0, 0);
++        lv_obj_set_style_border_width(info_panel_, 0, 0);
++        lv_obj_set_style_bg_color(info_panel_, lvgl_theme->background_color(), 0);
++        lv_obj_set_style_bg_opa(info_panel_, LV_OPA_COVER, 0);
++        lv_obj_clear_flag(info_panel_, LV_OBJ_FLAG_CLICKABLE);
++
++        info_label_ = lv_label_create(info_panel_);
++        lv_obj_set_style_text_color(info_label_, lvgl_theme->text_color(), 0);
++        lv_obj_set_style_text_color(info_label_, lvgl_theme->text_color(), 0);
++        lv_obj_set_style_text_line_space(info_label_, 4, 0);
++        lv_label_set_long_mode(info_label_, LV_LABEL_LONG_WRAP);
++        lv_obj_set_width(info_label_, LV_HOR_RES - 24);
++        lv_obj_center(info_label_);
++    }
++
++    bool visible = !lv_obj_has_flag(info_panel_, LV_OBJ_FLAG_HIDDEN);
++    if (visible) {
++        lv_obj_add_flag(info_panel_, LV_OBJ_FLAG_HIDDEN);
++    } else {
++        UpdateInfoText();
++        lv_obj_clear_flag(info_panel_, LV_OBJ_FLAG_HIDDEN);
++        lv_obj_move_foreground(info_panel_);
++    }
++}
++
++void CoreS3LcdDisplay::HandleButton(int index) {
++    switch (index) {
++        case 0:
++            Application::GetInstance().ToggleChatState();
++            break;
++        case 1:
++            ToggleSpeakerMute();
++            break;
++        case 2:
++            ChangeVolume(-10);
++            break;
++        case 3:
++            ChangeVolume(10);
++            break;
++        case 4:
++            ToggleInfoPanel();
++            break;
++        default:
++            break;
++    }
++}
++
++bool CoreS3LcdDisplay::HandleTouch(int x, int y) {
++    DisplayLockGuard lock(this);
++    ESP_LOGI(TAG, "touch x=%d y=%d", x, y);
++
++    // 信息页开着时，点任意位置关闭
++    if (info_panel_ != nullptr && !lv_obj_has_flag(info_panel_, LV_OBJ_FLAG_HIDDEN)) {
++        ToggleInfoPanel();
++        return true;
++    }
++
++    // 直接拿控件真实坐标做命中判断，避免自己算区域
++    for (int i = 0; i < kButtonCount; i++) {
++        if (buttons_[i] == nullptr) {
++            continue;
++        }
++        lv_area_t area;
++        lv_obj_get_coords(buttons_[i], &area);
++        if (x >= area.x1 && x <= area.x2 && y >= area.y1 && y <= area.y2) {
++            HandleButton(i);
++            return true;
++        }
++    }
++
++    // 控制条没命中，交给分页层（滑动切页 / 应用格点击）
++    if (FoxyUI::Get().OnRelease(x, y, true)) {
++        return true;
++    }
++    return false;
++}
+diff --git a/main/boards/m5stack/core-s3/cores3_display.h b/main/boards/m5stack/core-s3/cores3_display.h
+new file mode 100644
+index 0000000..d1a94de
+--- /dev/null
++++ b/main/boards/m5stack/core-s3/cores3_display.h
+@@ -0,0 +1,43 @@
++#ifndef CORES3_DISPLAY_H
++#define CORES3_DISPLAY_H
++
++#include "display/lcd_display.h"
++
++// CoreS3 专用界面：在小智原有状态栏/表情/字幕之上，加一条常驻控制条和一个信息页。
++// 触摸事件先交给这里判定，未命中才落回“轻点屏幕开始对话”的默认行为。
++class CoreS3LcdDisplay : public SpiLcdDisplay {
++public:
++    CoreS3LcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_t panel, int width,
++                     int height, int offset_x, int offset_y, bool mirror_x, bool mirror_y,
++                     bool swap_xy)
++        : SpiLcdDisplay(panel_io, panel, width, height, offset_x, offset_y, mirror_x, mirror_y,
++                        swap_xy) {}
++
++    void SetupUI() override;
++
++    // 按下时记录起点（供分页滑动判定）
++    void TouchPress(int x, int y);
++
++    // 返回 true 表示这次触摸被界面元素消费掉了
++    bool HandleTouch(int x, int y);
++
++private:
++    void BuildControlBar();
++    void RefreshControlBar();
++    void ToggleSpeakerMute();
++    void ChangeVolume(int delta);
++    void ToggleInfoPanel();
++    void HandleButton(int index);
++    void UpdateInfoText();
++    static void RefreshTimerCb(lv_timer_t* timer);
++
++    lv_obj_t* bar_ = nullptr;
++    lv_obj_t* buttons_[5] = {nullptr, nullptr, nullptr, nullptr, nullptr};
++    lv_obj_t* talk_label_ = nullptr;
++    lv_obj_t* mute_label_ = nullptr;
++    lv_obj_t* info_panel_ = nullptr;
++    lv_obj_t* info_label_ = nullptr;
++    bool speaker_muted_ = false;
++};
++
++#endif  // CORES3_DISPLAY_H
+diff --git a/main/boards/m5stack/core-s3/foxy_ui.cc b/main/boards/m5stack/core-s3/foxy_ui.cc
+new file mode 100644
+index 0000000..f2ed14b
+--- /dev/null
++++ b/main/boards/m5stack/core-s3/foxy_ui.cc
+@@ -0,0 +1,254 @@
++#include "foxy_ui.h"
++
++#include "cores3_display.h"
++
++#include <esp_log.h>
++#include <ctime>
++
++#define TAG "FoxyUI"
++
++namespace {
++constexpr int kScreenW = 320;
++constexpr int kScreenH = 240;
++constexpr int kBarH = 42;
++constexpr int kPageH = kScreenH - kBarH;
++constexpr int kSwipeThreshold = 60;
++
++constexpr uint32_t kBgDark = 0x14141A;
++constexpr uint32_t kCardBg = 0x22222C;
++constexpr uint32_t kAccent = 0xE8A33D;
++constexpr uint32_t kTextDim = 0x8A8A96;
++
++// 图标格几何：2×2
++constexpr int kGridMargin = 12;
++constexpr int kGridGap = 10;
++constexpr int kCellW = (kScreenW - kGridMargin * 2 - kGridGap) / 2;  // 143
++constexpr int kCellH = (kPageH - kGridMargin * 2 - kGridGap) / 2;     // 82
++
++lv_obj_t* MakePage(lv_obj_t* parent) {
++    lv_obj_t* page = lv_obj_create(parent);
++    lv_obj_set_size(page, kScreenW, kPageH);
++    lv_obj_set_pos(page, 0, 0);
++    lv_obj_set_style_bg_color(page, lv_color_hex(kBgDark), 0);
++    lv_obj_set_style_bg_opa(page, LV_OPA_COVER, 0);
++    lv_obj_set_style_border_width(page, 0, 0);
++    lv_obj_set_style_radius(page, 0, 0);
++    lv_obj_set_style_pad_all(page, 0, 0);
++    lv_obj_set_scrollbar_mode(page, LV_SCROLLBAR_MODE_OFF);
++    lv_obj_add_flag(page, LV_OBJ_FLAG_HIDDEN);
++    return page;
++}
++
++lv_obj_t* MakeCard(lv_obj_t* parent, int x, int y, int w, int h) {
++    lv_obj_t* card = lv_obj_create(parent);
++    lv_obj_set_size(card, w, h);
++    lv_obj_set_pos(card, x, y);
++    lv_obj_set_style_bg_color(card, lv_color_hex(kCardBg), 0);
++    lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
++    lv_obj_set_style_border_width(card, 0, 0);
++    lv_obj_set_style_radius(card, 12, 0);
++    lv_obj_set_style_pad_all(card, 6, 0);
++    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
++    return card;
++}
++
++lv_obj_t* MakeLabel(lv_obj_t* parent, const char* text, uint32_t color) {
++    lv_obj_t* label = lv_label_create(parent);
++    lv_label_set_text(label, text);
++    lv_obj_set_style_text_color(label, lv_color_hex(color), 0);
++    return label;
++}
++}  // namespace
++
++#ifndef FOXY_UI_SELFTEST
++#define FOXY_UI_SELFTEST 1
++#endif
++
++#if FOXY_UI_SELFTEST
++#include <freertos/FreeRTOS.h>
++#include <freertos/task.h>
++namespace {
++void SelfTestTask(void*) {
++    vTaskDelay(pdMS_TO_TICKS(4000));
++    for (int page = 1; page <= 2; page++) {
++        FoxyUI::Get().SetPage(page);
++        vTaskDelay(pdMS_TO_TICKS(2500));
++    }
++    FoxyUI::Get().SetPage(0);
++    vTaskDelay(pdMS_TO_TICKS(800));
++    ESP_LOGW("FoxyUI", "selftest done");
++    vTaskDelete(nullptr);
++}
++}  // namespace
++#endif
++FoxyUI& FoxyUI::Get() {
++    static FoxyUI instance;
++    return instance;
++}
++
++void FoxyUI::Init(CoreS3LcdDisplay* display) {
++    display_ = display;
++    DisplayLockGuard lock(display_);
++    lv_obj_t* screen = lv_screen_active();
++    home_ = MakePage(screen);
++    apps_ = MakePage(screen);
++    BuildHome();
++    BuildApps();
++    lv_timer_create(ClockTimerCb, 1000, nullptr);
++    SetPage(0);
++#if FOXY_UI_SELFTEST
++    xTaskCreate(SelfTestTask, "ui_selftest", 4096, nullptr, 2, nullptr);
++#endif
++    ESP_LOGI(TAG, "ui ready (pages=3)");
++}
++
++void FoxyUI::BuildHome() {
++    // 左边：像素 Foxy 占位形象（纯 LVGL 图形，等真素材再换）
++    lv_obj_t* face = lv_obj_create(home_);
++    lv_obj_set_size(face, 92, 92);
++    lv_obj_set_pos(face, 22, 40);
++    lv_obj_set_style_radius(face, LV_RADIUS_CIRCLE, 0);
++    lv_obj_set_style_bg_color(face, lv_color_hex(kAccent), 0);
++    lv_obj_set_style_bg_opa(face, LV_OPA_COVER, 0);
++    lv_obj_set_style_border_width(face, 0, 0);
++    lv_obj_clear_flag(face, LV_OBJ_FLAG_SCROLLABLE);
++
++    for (int i = 0; i < 2; i++) {
++        lv_obj_t* eye = lv_obj_create(face);
++        lv_obj_set_size(eye, 10, 16);
++        lv_obj_set_pos(eye, 22 + i * 38, 34);
++        lv_obj_set_style_bg_color(eye, lv_color_hex(0x1A1A1A), 0);
++        lv_obj_set_style_bg_opa(eye, LV_OPA_COVER, 0);
++        lv_obj_set_style_border_width(eye, 0, 0);
++        lv_obj_set_style_radius(eye, 5, 0);
++    }
++    lv_obj_t* mouth = lv_obj_create(face);
++    lv_obj_set_size(mouth, 16, 5);
++    lv_obj_set_pos(mouth, 38, 62);
++    lv_obj_set_style_bg_color(mouth, lv_color_hex(0x1A1A1A), 0);
++    lv_obj_set_style_bg_opa(mouth, LV_OPA_COVER, 0);
++    lv_obj_set_style_border_width(mouth, 0, 0);
++    lv_obj_set_style_radius(mouth, 3, 0);
++
++    lv_obj_t* name = MakeLabel(home_, "foxy", kAccent);
++    lv_obj_align(name, LV_ALIGN_TOP_MID, -78, 148);
++
++    // 右侧：时钟 + 日期
++    clock_label_ = MakeLabel(home_, "--:--", 0xF2F2F5);
++    lv_obj_set_style_text_color(clock_label_, lv_color_hex(0xF2F2F5), 0);
++    lv_obj_set_pos(clock_label_, 140, 22);
++
++    date_label_ = MakeLabel(home_, "----/--/--", kTextDim);
++    lv_obj_set_pos(date_label_, 142, 54);
++
++    // 右下：消息提醒位（先放占位）
++    lv_obj_t* msg_card = MakeCard(home_, 136, 82, 172, 96);
++    const char* placeholders[3] = {"暂无新消息", "", ""};
++    for (int i = 0; i < 3; i++) {
++        msg_labels_[i] = MakeLabel(msg_card, placeholders[i], i == 0 ? kTextDim : 0xE0E0E6);
++        lv_obj_set_pos(msg_labels_[i], 0, 2 + i * 26);
++    }
++    UpdateClock();
++}
++
++void FoxyUI::BuildApps() {
++    const char* names[4] = {"设置", "应用", "对话", "工具"};
++    for (int i = 0; i < 4; i++) {
++        int col = i % 2;
++        int row = i / 2;
++        lv_obj_t* cell = MakeCard(apps_, kGridMargin + col * (kCellW + kGridGap),
++                                  kGridMargin + row * (kCellH + kGridGap), kCellW, kCellH);
++        lv_obj_t* label = MakeLabel(cell, names[i], 0xF2F2F5);
++        lv_obj_align(label, LV_ALIGN_CENTER, 0, 0);
++    }
++}
++
++void FoxyUI::SetPage(int page) {
++    if (page < 0 || page > 2) {
++        return;
++    }
++    page_ = page;
++    DisplayLockGuard lock(display_);
++    if (page == 0) {
++        lv_obj_add_flag(home_, LV_OBJ_FLAG_HIDDEN);
++        lv_obj_add_flag(apps_, LV_OBJ_FLAG_HIDDEN);
++    } else if (page == 1) {
++        lv_obj_clear_flag(home_, LV_OBJ_FLAG_HIDDEN);
++        lv_obj_add_flag(apps_, LV_OBJ_FLAG_HIDDEN);
++        UpdateClock();
++    } else {
++        lv_obj_add_flag(home_, LV_OBJ_FLAG_HIDDEN);
++        lv_obj_clear_flag(apps_, LV_OBJ_FLAG_HIDDEN);
++    }
++    ESP_LOGI(TAG, "page=%d", page_);
++}
++
++bool FoxyUI::OnPress(int x, int y) {
++    press_x_ = x;
++    press_y_ = y;
++    pressed_ = true;
++    return false;
++}
++
++bool FoxyUI::OnRelease(int x, int y, bool short_tap) {
++    if (!pressed_) {
++        return false;
++    }
++    pressed_ = false;
++    int dx = x - press_x_;
++    int dy = y - press_y_;
++    bool horizontal = (dx > kSwipeThreshold && dx > dy * 2 && dx > -dy * 2) ||
++                      (dx < -kSwipeThreshold && -dx > dy * 2 && -dx > -dy * 2);
++    if (horizontal) {
++        SetPage(dx < 0 ? page_ + 1 : page_ - 1);
++        return true;
++    }
++    if (!short_tap) {
++        return page_ != 0;
++    }
++    if (page_ == 2) {
++        // 应用页：按格子坐标判断点了哪个（设置/应用/对话/工具）
++        int col = (x - kGridMargin) / (kCellW + kGridGap);
++        int row = (y - kGridMargin) / (kCellH + kGridGap);
++        if (col >= 0 && col < 2 && row >= 0 && row < 2) {
++            int index = row * 2 + col;
++            ESP_LOGI(TAG, "app tap index=%d", index);
++            if (index == 2) {
++                SetPage(0);
++            }
++            return true;
++        }
++        return true;
++    }
++    if (page_ == 1) {
++        return true;  // 首页暂时吞掉点击，避免误触发对话
++    }
++    return false;
++}
++
++void FoxyUI::UpdateClock() {
++    if (clock_label_ == nullptr || display_ == nullptr) {
++        return;
++    }
++    time_t now = time(nullptr);
++    struct tm tm_now = {};
++    localtime_r(&now, &tm_now);
++    char clock[32];
++    char date[48];
++    if (tm_now.tm_year > 120) {
++        snprintf(clock, sizeof(clock), "%02d:%02d", tm_now.tm_hour, tm_now.tm_min);
++        snprintf(date, sizeof(date), "%04d/%02d/%02d", tm_now.tm_year + 1900, tm_now.tm_mon + 1,
++                 tm_now.tm_mday);
++    } else {
++        snprintf(clock, sizeof(clock), "--:--");
++        snprintf(date, sizeof(date), "同步中");
++    }
++    DisplayLockGuard lock(display_);
++    lv_label_set_text(clock_label_, clock);
++    lv_label_set_text(date_label_, date);
++}
++
++void FoxyUI::ClockTimerCb(lv_timer_t* timer) {
++    (void)timer;
++    FoxyUI::Get().UpdateClock();
++}
+diff --git a/main/boards/m5stack/core-s3/foxy_ui.h b/main/boards/m5stack/core-s3/foxy_ui.h
+new file mode 100644
+index 0000000..05b4294
+--- /dev/null
++++ b/main/boards/m5stack/core-s3/foxy_ui.h
+@@ -0,0 +1,40 @@
++#pragma once
++
++#include <lvgl.h>
++
++class CoreS3LcdDisplay;
++
++// 轻量分页：0=对话（沿用小智原生界面）1=首页 2=应用
++// 触摸判定：按下记录坐标，抬起时算位移；横向 >=60px 视为切页。
++class FoxyUI {
++public:
++    static FoxyUI& Get();
++
++    void Init(CoreS3LcdDisplay* display);
++
++    // 返回 true 表示这次触摸已被 UI 消费（不要再触发对话）
++    bool OnPress(int x, int y);
++    bool OnRelease(int x, int y, bool short_tap);
++
++    void SetPage(int page);
++    int page() const { return page_; }
++
++private:
++    void BuildHome();
++    void BuildApps();
++    void BuildPageShells();
++    void UpdateClock();
++    static void ClockTimerCb(lv_timer_t* timer);
++
++    CoreS3LcdDisplay* display_ = nullptr;
++    lv_obj_t* home_ = nullptr;
++    lv_obj_t* apps_ = nullptr;
++    lv_obj_t* clock_label_ = nullptr;
++    lv_obj_t* date_label_ = nullptr;
++    lv_obj_t* msg_labels_[3] = {nullptr, nullptr, nullptr};
++
++    int page_ = 0;
++    int press_x_ = 0;
++    int press_y_ = 0;
++    bool pressed_ = false;
++};
 diff --git a/main/boards/m5stack/core-s3/m5stack_core_s3.cc b/main/boards/m5stack/core-s3/m5stack_core_s3.cc
-index 83d1259..031ae42 100644
+index 83d1259..fb0499e 100644
 --- a/main/boards/m5stack/core-s3/m5stack_core_s3.cc
 +++ b/main/boards/m5stack/core-s3/m5stack_core_s3.cc
 @@ -1,6 +1,7 @@
@@ -215,17 +880,20 @@ index 83d1259..031ae42 100644
          });
          power_save_timer_->OnExitSleepMode([this]() {
              GetDisplay()->SetPowerSaveMode(false);
-@@ -204,6 +207,9 @@ private:
+@@ -204,6 +207,12 @@ private:
          if (touch_point.num > 0 && !was_touched) {
              was_touched = true;
              touch_start_time = esp_timer_get_time() / 1000; // 转换为毫秒
 +            touch_x_ = touch_point.x;
 +            touch_y_ = touch_point.y;
 +            ESP_LOGI(TAG, "touch press x=%d y=%d num=%d", touch_point.x, touch_point.y, (int)touch_point.num);
++            if (display_ != nullptr) {
++                display_->TouchPress(touch_point.x, touch_point.y);
++            }
          } 
          // 检测触摸释放
          else if (touch_point.num == 0 && was_touched) {
-@@ -217,6 +223,10 @@ private:
+@@ -217,6 +226,10 @@ private:
                      EnterWifiConfigMode();
                      return;
                  }
@@ -236,7 +904,7 @@ index 83d1259..031ae42 100644
                  app.ToggleChatState();
              }
          }
-@@ -264,7 +274,7 @@ private:
+@@ -264,7 +277,7 @@ private:
          io_config.cs_gpio_num = GPIO_NUM_3;
          io_config.dc_gpio_num = GPIO_NUM_35;
          io_config.spi_mode = 2;
@@ -245,7 +913,7 @@ index 83d1259..031ae42 100644
          io_config.trans_queue_depth = 10;
          io_config.lcd_cmd_bits = 8;
          io_config.lcd_param_bits = 8;
-@@ -285,7 +295,7 @@ private:
+@@ -285,7 +298,7 @@ private:
          esp_lcd_panel_swap_xy(panel, DISPLAY_SWAP_XY);
          esp_lcd_panel_mirror(panel, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y);
  

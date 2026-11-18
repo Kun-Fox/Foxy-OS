@@ -210,6 +210,9 @@ private:
             touch_x_ = touch_point.x;
             touch_y_ = touch_point.y;
             ESP_LOGI(TAG, "touch press x=%d y=%d num=%d", touch_point.x, touch_point.y, (int)touch_point.num);
+            if (display_ != nullptr) {
+                display_->TouchPress(touch_point.x, touch_point.y);
+            }
         } 
         // 检测触摸释放
         else if (touch_point.num == 0 && was_touched) {

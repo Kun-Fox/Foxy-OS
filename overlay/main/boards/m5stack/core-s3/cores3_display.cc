@@ -2,6 +2,7 @@
 
 #include "application.h"
 #include "display/lvgl_display/lvgl_theme.h"
+#include "foxy_ui.h"
 #include "board.h"
 
 #include <esp_log.h>
@@ -48,9 +49,14 @@ static void FpsProbeTask(void* arg) {
 void CoreS3LcdDisplay::SetupUI() {
     SpiLcdDisplay::SetupUI();
     BuildControlBar();
+    FoxyUI::Get().Init(this);
 #if FOXY_FPS_PROBE
-    xTaskCreate(FpsProbeTask, "fps_probe", 4096, this, 2, nullptr);
+    xTaskCreate(FpsProbeTask, "fps_probe", 16384, this, 2, nullptr);
 #endif
+}
+
+void CoreS3LcdDisplay::TouchPress(int x, int y) {
+    FoxyUI::Get().OnPress(x, y);
 }
 
 void CoreS3LcdDisplay::BuildControlBar() {
@@ -288,6 +294,11 @@ bool CoreS3LcdDisplay::HandleTouch(int x, int y) {
             HandleButton(i);
             return true;
         }
+    }
+
+    // 控制条没命中，交给分页层（滑动切页 / 应用格点击）
+    if (FoxyUI::Get().OnRelease(x, y, true)) {
+        return true;
     }
     return false;
 }

@@ -50,3 +50,24 @@
 ## 10. 构建失败仍会烧旧 bin
 - `build.py` 失败时 `build/xiaozhi.bin` 还是上一次的产物，直接 flash 会把坏固件又写回去
 - **实践**：先看 `build_exit`，再烧
+
+## 11. 全屏刷新探针任务栈要 16KB
+- lv_refr_now() 是在**调用者任务栈**上完成渲染的，4096 栈直接 stack overflow
+- 现象：st:0xc (RTC_SW_CPU_RST) + ApplicationStackOverflowHook 回到 efr_configured_layer
+- **修复**：xTaskCreate(FpsProbeTask, "fps_probe", 16384, ...)
+
+## 12. -Werror=format-truncation 会卡编译
+- char clock[16] 配 snprintf("%02d:%02d") 报 output may be truncated
+- **修复**：时间/日期缓冲给到 32 / 48 字节
+
+## 13. 分页层与原生界面的层叠关系
+- 页面容器做 320x198、y=0；控制条在 y=198..240，两者不重叠，切页时控制条始终可用
+- 页面容器是不透明底 + 默认隐藏，只有 page!=0 才显示；对话页直接用原生界面
+
+## 14. 触摸按下/抬起要成对才有滑动判定
+- 只在抬起时回调拿不到起点，滑动永远判不出来
+- **做法**：OnPress 记住坐标，OnRelease 算位移（横向 ≥60px 且 dx 占优 → 切页）
+
+## 15. 开机日志抓不到 FoxyUI 初始化
+- UI 在 ~650ms 就初始化完了，串口晚开就错过
+- **做法**：sptool --after hard-reset flash-id 之后立刻开串口（DTR/RTS 置 False），能抓全
