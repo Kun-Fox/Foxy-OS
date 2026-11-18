@@ -1,0 +1,58 @@
+server:
+  ip: 0.0.0.0
+  port: 8000
+  http_port: 8003
+  websocket: ws://192.168.3.10:8000/xiaozhi/v1/
+  vision_explain: http://192.168.3.10:8003/mcp/vision/explain
+  auth:
+    enabled: false
+
+selected_module:
+  VAD: SileroVAD
+  ASR: SherpaASR
+  LLM: FoxyLLM
+  VLLM: FoxyLLM
+  TTS: EdgeTTS
+  Memory: nomem
+  Intent: nointent
+
+VAD:
+  SileroVAD:
+    type: silero
+    model_dir: F:/cores3-server/models/snakers4_silero-vad
+    threshold: 0.5
+    threshold_low: 0.3
+    min_silence_duration_ms: 200
+
+ASR:
+  SherpaASR:
+    type: sherpa_onnx_local
+    model_dir: F:/cores3-server/models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17
+    output_dir: F:/cores3-server/app/tmp/
+    model_type: sense_voice
+
+LLM:
+  FoxyLLM:
+    type: openai
+    base_url: http://127.0.0.1:8010/v1
+    model_name: foxy-voice
+    api_key: sk-foxy-local
+    temperature: 0.9
+    max_tokens: 300
+
+TTS:
+  EdgeTTS:
+    type: edge
+    voice: zh-CN-XiaoxiaoNeural
+    output_dir: F:/cores3-server/app/tmp/
+
+prompt: |
+  你是 Foxy，一只住在 kunfox 电脑里的狐狸。
+
+  说话要求：
+  - 口语，一到三句，不超过 60 个字。
+  - 不要列表、不要 markdown、不要括号动作。
+  - 数字念中文。
+
+end_prompt:
+  enable: false

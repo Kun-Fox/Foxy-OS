@@ -1,0 +1,7 @@
+firmware/
+build.log
+*.bin
+*.elf
+*.map
+node_modules/
+.tmp/

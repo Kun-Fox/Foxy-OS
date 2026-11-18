@@ -1,0 +1,255 @@
+diff --git a/core/connection.py b/core/connection.py
+index 62d8fff..4c03088 100644
+--- a/core/connection.py
++++ b/core/connection.py
+@@ -38,6 +38,7 @@ from plugins_func.loadplugins import auto_import_modules
+ from plugins_func.register import Action, ActionResponse, all_function_registry, module_func_map
+ from core.auth import AuthenticationError
+ from config.config_loader import get_private_config_from_api
++from core.utils import conn_registry
+ from core.providers.tts.dto.dto import ContentType, TTSMessageDTO, SentenceType
+ from config.logger import setup_logging, build_module_string, create_connection_logger
+ from config.manage_api_client import DeviceNotFoundException, DeviceBindException, generate_and_save_chat_title
+@@ -185,6 +186,7 @@ class ConnectionHandler:
+                 int(self.config.get("close_connection_no_voice_time", 120)) + 60
+         )  # 在原来第一道关闭的基础上加60秒，进行二道关闭
+         self.timeout_task = None
++        self._keepalive_task = None
+ 
+         # {"mcp":true} 表示启用MCP功能
+         self.features = None
+@@ -222,6 +224,7 @@ class ConnectionHandler:
+ 
+             # 认证通过,继续处理
+             self.websocket = ws
++            conn_registry.register(self)
+ 
+             # 检查是否来自MQTT连接
+             request_path = ws.request.path
+@@ -236,6 +239,9 @@ class ConnectionHandler:
+             # 启动超时检查任务
+             self.timeout_task = asyncio.create_task(self._check_timeout())
+ 
++            # 启动待命保活任务：设备在待命（不推麦克风）时保持连接并维持固件侧超时计时
++            self._keepalive_task = asyncio.create_task(self._keepalive_loop())
++
+             # 启动AEC缓存清理任务
+             self._aec_cache_cleanup_task = asyncio.create_task(self._check_aec_cache_expiry())
+ 
+@@ -263,6 +269,7 @@ class ConnectionHandler:
+             self.logger.bind(tag=TAG).error(f"Connection error: {str(e)}-{stack_trace}")
+             return
+         finally:
++            conn_registry.unregister(self)
+             try:
+                 await self._save_and_close(ws)
+             except Exception as final_error:
+@@ -1219,7 +1226,7 @@ class ConnectionHandler:
+                             )
+                         )
+         except Exception as e:
+-            self.logger.bind(tag=TAG).error(f"LLM stream processing error: {e}")
++            self.logger.bind(tag=TAG).error(f"LLM stream processing error: {e!r} cause={e.__cause__!r}")
+             self.tts.tts_text_queue.put(
+                 TTSMessageDTO(
+                     sentence_id=current_sentence_id,
+@@ -1571,6 +1578,15 @@ class ConnectionHandler:
+                     pass
+                 self.timeout_task = None
+ 
++            # 取消保活任务
++            if self._keepalive_task and not self._keepalive_task.done():
++                self._keepalive_task.cancel()
++                try:
++                    await self._keepalive_task
++                except asyncio.CancelledError:
++                    pass
++                self._keepalive_task = None
++
+             # 取消AEC缓存清理任务
+             if hasattr(self, "_aec_cache_cleanup_task") and self._aec_cache_cleanup_task and not self._aec_cache_cleanup_task.done():
+                 self._aec_cache_cleanup_task.cancel()
+@@ -1717,6 +1733,22 @@ class ConnectionHandler:
+         except Exception as e:
+             self.logger.bind(tag=TAG).error(f"Chat and close error: {str(e)}")
+ 
++    async def _keepalive_loop(self):
++        """每 30 秒发一次 ping，保持待命连接（麦克风关闭时也不会被超时断开）"""
++        try:
++            while not self.stop_event.is_set():
++                await asyncio.sleep(30)
++                if self.stop_event.is_set():
++                    break
++                try:
++                    await self.websocket.send(json.dumps({"type": "ping"}))
++                    # 视为活动，避免 _check_timeout 在待命时关闭连接
++                    self.last_activity_time = time.time() * 1000
++                except Exception:
++                    break
++        except Exception as e:
++            self.logger.bind(tag=TAG).debug(f"保活任务退出: {e}")
++
+     async def _check_timeout(self):
+         """检查连接超时"""
+         try:
+diff --git a/core/handle/receiveAudioHandle.py b/core/handle/receiveAudioHandle.py
+index 2e81a78..2057be9 100644
+--- a/core/handle/receiveAudioHandle.py
++++ b/core/handle/receiveAudioHandle.py
+@@ -79,6 +79,15 @@ async def startToChat(conn: "ConnectionHandler", text):
+         await check_bind_device(conn)
+         return
+ 
++    # 音量/亮度这类设备指令在本地直接处理，不交给大模型（大模型不会调设备工具）
++    try:
++        from core.utils.device_commands import handle_device_command
++
++        if await handle_device_command(conn, actual_text):
++            return
++    except Exception as e:
++        conn.logger.bind(tag=TAG).error(f"设备指令处理失败: {e}")
++
+     # 如果当日的输出字数大于限定的字数
+     if conn.max_output_size > 0:
+         if check_device_output_limit(
+diff --git a/core/http_server.py b/core/http_server.py
+index feb96f3..ed7825d 100644
+--- a/core/http_server.py
++++ b/core/http_server.py
+@@ -1,4 +1,5 @@
+ import asyncio
++import json
+ from aiohttp import web
+ from config.logger import setup_logging
+ from core.api.ota_handler import OTAHandler
+@@ -32,6 +33,96 @@ class SimpleHttpServer:
+         else:
+             return f"ws://{local_ip}:{port}/xiaozhi/v1/"
+ 
++    async def handle_debug_say(self, request):
++        """让在线设备"念"一句话：等价于设备自己发来 listen(detect, text)。
++
++        用法: POST http://127.0.0.1:8003/debug/say {"text": "你好"}
++        """
++        import json as _json
++        from core.utils import conn_registry
++        from core.handle.textHandle import handleTextMessage
++
++        try:
++            data = await request.json()
++        except Exception:
++            data = {}
++        text = (data.get("text") or "").strip()
++        if not text:
++            return web.json_response(
++                {"ok": False, "error": "text 不能为空"}, status=400
++            )
++        conn = conn_registry.get(data.get("device_id"))
++        if conn is None or getattr(conn, "websocket", None) is None:
++            return web.json_response(
++                {"ok": False, "error": "没有在线的设备连接"}, status=404
++            )
++        msg = _json.dumps(
++            {"type": "listen", "state": "detect", "text": text}, ensure_ascii=False
++        )
++        asyncio.create_task(handleTextMessage(conn, msg))
++        return web.json_response(
++            {"ok": True, "device_id": getattr(conn, "device_id", None), "text": text}
++        )
++
++    async def handle_debug_tool(self, request):
++        """直接调用设备端 MCP 工具（例如调音量/亮度），不经过大模型。
++
++        用法: POST http://127.0.0.1:8003/debug/tool
++              {"name": "self.audio_speaker.set_volume", "arguments": {"volume": 40}}
++        """
++        from core.utils import conn_registry
++        from core.providers.tools.device_mcp.mcp_handler import call_mcp_tool
++
++        try:
++            data = await request.json()
++        except Exception:
++            data = {}
++        name = (data.get("name") or "").strip()
++        if not name:
++            return web.json_response(
++                {"ok": False, "error": "name 不能为空"}, status=400
++            )
++        conn = conn_registry.get(data.get("device_id"))
++        if conn is None or getattr(conn, "websocket", None) is None:
++            return web.json_response(
++                {"ok": False, "error": "没有在线的设备连接"}, status=404
++            )
++        mcp_client = getattr(conn, "mcp_client", None)
++        if not mcp_client:
++            return web.json_response(
++                {"ok": False, "error": "设备的 MCP 客户端没准备好"}, status=503
++            )
++        try:
++            from core.utils.device_commands import resolve_tool_name
++
++            tool = resolve_tool_name(conn, name) or name
++            result = await call_mcp_tool(
++                conn,
++                mcp_client,
++                tool,
++                json.dumps(data.get("arguments") or {}, ensure_ascii=False),
++            )
++            return web.json_response(
++                {"ok": True, "device_id": getattr(conn, "device_id", None), "name": name, "result": result}
++            )
++        except Exception as e:
++            return web.json_response({"ok": False, "error": str(e)}, status=500)
++
++    async def handle_debug_state(self, request):
++        """查看当前在线的设备连接。"""
++        from core.utils import conn_registry
++
++        devices = []
++        for device_id, conn in conn_registry.all_devices().items():
++            devices.append(
++                {
++                    "device_id": device_id,
++                    "speaking": bool(getattr(conn, "client_is_speaking", False)),
++                    "session_id": getattr(conn, "session_id", None),
++                }
++            )
++        return web.json_response({"ok": True, "devices": devices})
++
+     async def start(self):
+         try:
+             server_config = self.config["server"]
+@@ -72,6 +163,11 @@ class SimpleHttpServer:
+                         web.options(
+                             "/mcp/vision/explain", self.vision_handler.handle_options
+                         ),
++                        # 本机调试：把一句话注入在线设备会话，让板子念出来
++                        web.post("/debug/say", self.handle_debug_say),
++                        web.get("/debug/state", self.handle_debug_state),
++                        # 直接调用设备端 MCP 工具（音量/亮度等），不经过大模型
++                        web.post("/debug/tool", self.handle_debug_tool),
+                     ]
+                 )
+ 
+diff --git a/core/utils/opus_encoder_utils.py b/core/utils/opus_encoder_utils.py
+index 8d603e2..54114ad 100644
+--- a/core/utils/opus_encoder_utils.py
++++ b/core/utils/opus_encoder_utils.py
+@@ -31,7 +31,7 @@ class OpusEncoderUtils:
+         self.total_frame_size = self.frame_size * channels
+ 
+         # 比特率和复杂度设置
+-        self.bitrate = 24000  # bps
++        self.bitrate = 48000  # bps (局域网带宽充裕，提高清晰度)
+         self.complexity = 10  # 最高质量
+ 
+         # 缓冲区初始化为空
+@@ -136,4 +136,4 @@ class OpusEncoderUtils:
+                 del self.encoder
+                 self.encoder = None
+             except Exception as e:
+-                logging.error(f"Error releasing Opus encoder: {e}")
+\ No newline at end of file
++                logging.error(f"Error releasing Opus encoder: {e}")
+
+
