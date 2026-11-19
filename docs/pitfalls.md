@@ -86,3 +86,20 @@
 - 8KB 读缓冲放栈上直接编译失败：`-Werror=frame-larger-than=1536`，改成 `std::vector<uint8_t>` 走堆。
 - 核心代码不能 include 板级头（AGENTS.md 的规矩）：音乐控制走 `Display::OnMusicCommand(action, index)` 虚函数，板级 `CoreS3LcdDisplay` 覆写后转给 `FoxyUI::HandleMusicCommand`。
 - 选曲/服务端列表里中文文件名没问题（设备按 index 取流，不做 URL 编码），但曲目时长暂时算不出来，UI 只显示已播秒数。
+
+## 17. 跨任务改 LVGL 控件会崩（IllegalInstruction）
+
+从自己建的任务里更新 LVGL 控件（小说页首版：xTaskCreate + 下载完再 setText），这套 lvgl_port 下会 `Guru Meditation: Core 0 panic'ed (IllegalInstruction)`。
+`lv_async_call` 也不行。可靠做法：**在调用线程里同步发 HTTP，拿完数据立刻更新控件**，或者干脆把数据准备好再 `DisplayLockGuard` 一次性刷。
+
+## 18. 整屏快照要放 PSRAM
+
+153,600 字节（320×240 RGB565）直接 `malloc` 会压崩任务，改 `heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)`，失败再回退 `malloc`。
+
+## 19. 播放音乐时不要截屏
+
+音乐流占着 lwIP 缓冲，此时 `/debug/snapshot` 会超时；先 `stop` 再截。
+
+## 20. 串口工具一开就复位
+
+pyserial 打开 COM7 的瞬间会拉 DTR/RTS 复位板子。要么 `Serial()` 之后立刻 `setDTR(False)/setRTS(False)`（仍会复位一次），要么把命令延后 ~15 秒再发，否则会打到重启中的板上。

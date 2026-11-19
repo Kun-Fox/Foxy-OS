@@ -9,7 +9,13 @@
 
 #include <esp_app_desc.h>
 #include <esp_log.h>
+#include <esp_http_client.h>
 #include <esp_netif.h>
+#include "cJSON.h"
+#include <settings.h>
+#include <memory>
+#include <string>
+#include <vector>
 
 #include <cstdlib>
 #include <cstring>
@@ -41,7 +47,9 @@ constexpr int kPageTouch = 6;     // 触摸测试
 constexpr int kPageCalc = 7;      // 计算器
 constexpr int kPageMusic = 8;     // 音乐
 constexpr int kPageKeyboard = 9;  // 屏幕键盘
-constexpr int kPageCount = 10;
+constexpr int kPageNovel = 10;    // 小说
+constexpr int kPageAlarm = 11;    // 闹钟
+constexpr int kPageCount = 12;
 
 // 二级列表页的网格参数（顶部留出返回键的位置）
 constexpr int kListTop = 40;
@@ -231,6 +239,8 @@ void FoxyUI::Init(CoreS3LcdDisplay* display) {
     BuildCalculator();
     BuildMusic();
     BuildKeyboard();
+    BuildNovel();
+    BuildAlarm();
     BuildChat();
     // 对话页的返回键挂在最顶层，原生对话界面也在这层，所以必须比它更新
     chat_back_ = nullptr;  // 对话页同样用滑动手势返回
@@ -913,7 +923,7 @@ void FoxyUI::SetPage(int page) {
         display_->SetChatVisible(false);
     }
 
-    lv_obj_t* pages[] = {home_, apps_, settings_, applist_, toollist_, touchtest_, calc_, music_, chat_, kbd_};
+    lv_obj_t* pages[] = {home_, apps_, settings_, applist_, toollist_, touchtest_, calc_, music_, chat_, kbd_, novel_, alarm_};
     for (lv_obj_t* p : pages) {
         if (p != nullptr) {
             lv_obj_add_flag(p, LV_OBJ_FLAG_HIDDEN);
@@ -927,10 +937,23 @@ void FoxyUI::SetPage(int page) {
             lv_obj_add_flag(chat_back_, LV_OBJ_FLAG_HIDDEN);
         }
     }
+    // 切页方向按"层级深浅"算：首页 0 → 应用页 1 → 二级页 2。
+    // 往里走从左往右推，往回走反过来，这样所有页面的转场方向都一致。
+    auto depth_of = [](int page) {
+        if (page == kPageHome) {
+            return 0;
+        }
+        if (page == kPageApps) {
+            return 1;
+        }
+        return 2;
+    };
     int dir = 0;
-    if (page_ == kPageApps && page_before == kPageHome) {
+    int depth_new = depth_of(page_);
+    int depth_old = depth_of(page_before);
+    if (depth_new > depth_old) {
         dir = 1;
-    } else if (page_ == kPageHome && page_before == kPageApps) {
+    } else if (depth_new < depth_old) {
         dir = -1;
     }
     if (page_ == kPageChat) {
@@ -971,6 +994,14 @@ void FoxyUI::SetPage(int page) {
         case kPageKeyboard:
             target = kbd_;
             UpdateKeyboardText();
+            break;
+        case kPageNovel:
+            target = novel_;
+            NovelTurn(0);
+            break;
+        case kPageAlarm:
+            target = alarm_;
+            AlarmFetch();
             break;
         case kPageChat:
             target = chat_;
@@ -1112,6 +1143,11 @@ bool FoxyUI::OnRelease(int x, int y, bool short_tap) {
     // 滑动判定收紧：至少 80px、横向位移是纵向的两倍以上，才当翻页/返回。
     // 这样"点一下"或者"轻轻蹭一下"都不会再整页滑走。
     if (adx >= kSwipeThreshold && adx > ady * 2) {
+        if (page_ == kPageNovel) {
+            // 小说页左右滑动是翻页，不是翻界面
+            NovelTurn(dx < 0 ? 1 : -1);
+            return true;
+        }
         if (dx < 0) {
             if (page_ == kPageHome) {
                 SetPage(kPageApps);
@@ -1168,6 +1204,15 @@ bool FoxyUI::OnRelease(int x, int y, bool short_tap) {
         }
         return HandleSettingsTap(x, y);
     }
+    if (page_ == kPageNovel) {
+        // 左边三分之一上一页，右边三分之一下一页，中间什么都不做
+        if (x < 90) {
+            NovelTurn(-1);
+        } else if (x > 230) {
+            NovelTurn(1);
+        }
+        return true;
+    }
     if (page_ == kPageAppList) {
         if (HitTest(back_applist_, x, y)) {
             SetPage(kPageApps);
@@ -1180,6 +1225,13 @@ bool FoxyUI::OnRelease(int x, int y, bool short_tap) {
             int index = row * 2 + col;
             if (index == 0) {
                 SetPage(kPageMusic);
+            } else if (index == 1) {
+                novel_book_ = 0;
+                novel_page_ = 0;
+                novel_pages_ = 0;
+                SetPage(kPageNovel);
+            } else if (index == 2) {
+                SetPage(kPageAlarm);
             } else {
                 ESP_LOGI(TAG, "app %s not implemented yet", names[index]);
             }
@@ -1610,3 +1662,241 @@ void FoxyUI::KeyboardSend() {
 
 
 
+
+
+
+// ==== novel page (auto-appended) ====
+struct NovelPayload {
+    std::string title;
+    int page = 0;
+    int pages = 1;
+    std::string text;
+};
+// 小说正文由服务器按字数切页，设备只负责翻页与显示，省内存。
+constexpr int kNovelCharsPerPage = 420;
+
+static std::string NovelServerBase() {
+    Settings settings("wifi", true);
+    std::string ota_url = settings.GetString("ota_url");
+    std::string host;
+    if (!ota_url.empty()) {
+        size_t scheme = ota_url.find("://");
+        if (scheme != std::string::npos) {
+            size_t start = scheme + 3;
+            size_t slash = ota_url.find('/', start);
+            host = ota_url.substr(0, slash == std::string::npos ? ota_url.size() : slash);
+        }
+    }
+    if (host.empty()) {
+        host = "http://192.168.3.10:8003";
+    }
+    return host;
+}
+
+struct NovelJob {
+    int book;
+    int page;
+};
+
+void FoxyUI::NovelFetch(int page) {
+    // 直接在调用线程里同步拉一页（约 100-300ms），简单可靠：
+    // 之前用独立任务做，跨任务改控件会把 LVGL 内部状态踩坏（IllegalInstruction）。
+    std::string base = NovelServerBase();
+    char url[256];
+    snprintf(url, sizeof(url), "%s/debug/novel/page?index=%d&page=%d", base.c_str(), novel_book_, page);
+    ESP_LOGI(TAG, "novel get %s", url);
+
+    esp_http_client_config_t config = {};
+    config.url = url;
+    config.method = HTTP_METHOD_GET;
+    config.timeout_ms = 6000;
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (client == nullptr) {
+        return;
+    }
+    std::string body;
+    if (esp_http_client_open(client, 0) == ESP_OK) {
+        esp_http_client_fetch_headers(client);
+        std::vector<char> buf(512);
+        int read = 0;
+        while ((read = esp_http_client_read(client, buf.data(), buf.size())) > 0) {
+            body.append(buf.data(), read);
+            if (body.size() > 6144) {
+                break;
+            }
+        }
+    }
+    int status = esp_http_client_get_status_code(client);
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+    ESP_LOGI(TAG, "novel status=%d bytes=%d", status, static_cast<int>(body.size()));
+    if (status != 200) {
+        return;
+    }
+    cJSON* root = cJSON_Parse(body.c_str());
+    if (root == nullptr) {
+        return;
+    }
+    cJSON* text_item = cJSON_GetObjectItem(root, "text");
+    cJSON* page_item = cJSON_GetObjectItem(root, "page");
+    cJSON* pages_item = cJSON_GetObjectItem(root, "pages");
+    cJSON* title_item = cJSON_GetObjectItem(root, "title");
+    std::string body_text = cJSON_IsString(text_item) ? text_item->valuestring : "";
+    int page_now = cJSON_IsNumber(page_item) ? page_item->valueint : 0;
+    int page_total = cJSON_IsNumber(pages_item) ? pages_item->valueint : 1;
+    std::string book_name = cJSON_IsString(title_item) ? title_item->valuestring : "";
+    cJSON_Delete(root);
+
+    SetNovelText(book_name, page_now, page_total, body_text);
+}
+
+void FoxyUI::SetNovelText(const std::string& title, int page, int pages, const std::string& text) {
+    DisplayLockGuard lock(display_);
+    novel_page_ = page;
+    novel_pages_ = pages;
+    if (novel_title_ != nullptr) {
+        size_t dot = title.rfind(".txt");
+        std::string shown = dot == std::string::npos ? title : title.substr(0, dot);
+        lv_label_set_text(novel_title_, shown.c_str());
+    }
+    if (novel_body_ != nullptr) {
+        lv_label_set_text(novel_body_, text.c_str());
+    }
+    if (novel_foot_ != nullptr) {
+        char foot[32];
+        snprintf(foot, sizeof(foot), "%d / %d", page + 1, pages);
+        lv_label_set_text(novel_foot_, foot);
+    }
+}
+
+void FoxyUI::BuildNovel() {
+    novel_ = MakePage(lv_screen_active());
+    lv_obj_t* header = lv_label_create(novel_);
+    lv_label_set_text(header, "小说");
+    lv_obj_set_style_text_color(header, lv_color_hex(kTextDim), 0);
+    lv_obj_set_pos(header, 14, 10);
+
+    novel_title_ = lv_label_create(novel_);
+    lv_label_set_text(novel_title_, "加载中…");
+    lv_obj_set_style_text_color(novel_title_, lv_color_hex(kAccent), 0);
+    lv_obj_set_pos(novel_title_, 70, 10);
+
+    novel_body_ = lv_label_create(novel_);
+    lv_label_set_text(novel_body_, "");
+    lv_obj_set_style_text_color(novel_body_, lv_color_hex(0xECECF1), 0);
+    lv_label_set_long_mode(novel_body_, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(novel_body_, 296);
+    lv_obj_set_pos(novel_body_, 12, 40);
+    lv_obj_set_style_text_line_space(novel_body_, 4, 0);
+
+    novel_foot_ = lv_label_create(novel_);
+    lv_label_set_text(novel_foot_, "");
+    lv_obj_set_style_text_color(novel_foot_, lv_color_hex(kTextDim), 0);
+    lv_obj_set_pos(novel_foot_, 268, 220);
+}
+
+void FoxyUI::NovelTurn(int delta) {
+    int target = novel_page_ + delta;
+    if (target < 0) {
+        // 已经是第一页，往回翻就退回应用列表
+        SetPage(kPageAppList);
+        return;
+    }
+    if (novel_pages_ > 0 && target >= novel_pages_) {
+        ESP_LOGI(TAG, "novel at last page");
+        return;
+    }
+    novel_page_ = target;
+    NovelFetch(target);
+}
+
+
+
+
+
+
+void FoxyUI::BuildAlarm() {
+    alarm_ = MakePage(lv_screen_active());
+    lv_obj_t* header = lv_label_create(alarm_);
+    lv_label_set_text(header, "闹钟");
+    lv_obj_set_style_text_color(header, lv_color_hex(kAccent), 0);
+    lv_obj_set_pos(header, 14, 12);
+
+    lv_obj_t* hint = lv_label_create(alarm_);
+    lv_label_set_text(hint, "说：十分钟后叫我");
+    lv_obj_set_style_text_color(hint, lv_color_hex(kTextDim), 0);
+    lv_obj_set_pos(hint, 14, 44);
+
+    alarm_list_ = lv_label_create(alarm_);
+    lv_label_set_text(alarm_list_, "读取中…");
+    lv_label_set_long_mode(alarm_list_, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(alarm_list_, 292);
+    lv_obj_set_pos(alarm_list_, 14, 80);
+    lv_obj_set_style_text_line_space(alarm_list_, 6, 0);
+}
+
+void FoxyUI::SetAlarmText(const std::string& text) {
+    DisplayLockGuard lock(display_);
+    if (alarm_list_ != nullptr) {
+        lv_label_set_text(alarm_list_, text.c_str());
+    }
+}
+
+void FoxyUI::AlarmFetch() {
+    std::string base = NovelServerBase();
+    char url[192];
+    snprintf(url, sizeof(url), "%s/debug/alarms", base.c_str());
+    esp_http_client_config_t config = {};
+    config.url = url;
+    config.method = HTTP_METHOD_GET;
+    config.timeout_ms = 5000;
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (client == nullptr) {
+        return;
+    }
+    std::string body;
+    if (esp_http_client_open(client, 0) == ESP_OK) {
+        esp_http_client_fetch_headers(client);
+        std::vector<char> buf(256);
+        int read = 0;
+        while ((read = esp_http_client_read(client, buf.data(), buf.size())) > 0) {
+            body.append(buf.data(), read);
+            if (body.size() > 4096) {
+                break;
+            }
+        }
+    }
+    int status = esp_http_client_get_status_code(client);
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+    ESP_LOGI(TAG, "alarms status=%d bytes=%d", status, (int)body.size());
+    if (status != 200) {
+        return;
+    }
+    cJSON* root = cJSON_Parse(body.c_str());
+    if (root == nullptr) {
+        return;
+    }
+    std::string lines;
+    cJSON* list = cJSON_GetObjectItem(root, "alarms");
+    int count = cJSON_GetArraySize(list);
+    if (count == 0) {
+        lines = "没有正在倒计时的闹钟。\n\n说一句\"三分钟后叫我\"就行。";
+    } else {
+        for (int i = 0; i < count && i < 5; i++) {
+            cJSON* item = cJSON_GetArrayItem(list, i);
+            cJSON* label = cJSON_GetObjectItem(item, "label");
+            cJSON* left = cJSON_GetObjectItem(item, "seconds_left");
+            char line[96];
+            int seconds = cJSON_IsNumber(left) ? left->valueint : 0;
+            snprintf(line, sizeof(line), "· %d:%02d  %s", seconds / 60, seconds % 60,
+                     cJSON_IsString(label) ? label->valuestring : "闹钟");
+            if (!lines.empty()) {
+                lines += "\n";
+            }
+            lines += line;
+        }
+    }
+    cJSON_Delete(root);
+    SetAlarmText(lines);
+}

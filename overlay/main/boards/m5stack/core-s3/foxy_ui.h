@@ -40,6 +40,16 @@ private:
     void BuildMusic();
     void BuildChat();
     void BuildKeyboard();
+    void BuildNovel();
+    void BuildAlarm();
+    void AlarmFetch();
+    void SetAlarmText(const std::string& text);
+    void NovelTurn(int delta);
+    void SetNovelText(const std::string& title, int page, int pages, const std::string& text);
+    static void NovelTask(void* arg);
+    static void NovelApplyCb(void* arg);
+    void NovelFetch(int page);
+
     bool HandleKeyboardTap(int x, int y);
     void KeyboardKey(int code);
     void KeyboardSend();
@@ -107,6 +117,15 @@ private:
     int cover_index_ = -1;
 
     lv_obj_t* kbd_ = nullptr;
+    lv_obj_t* novel_ = nullptr;
+    lv_obj_t* novel_title_ = nullptr;
+    lv_obj_t* novel_body_ = nullptr;
+    lv_obj_t* novel_foot_ = nullptr;
+    int novel_book_ = 0;
+    int novel_page_ = 0;
+    int novel_pages_ = 0;
+    lv_obj_t* alarm_ = nullptr;
+    lv_obj_t* alarm_list_ = nullptr;
     lv_obj_t* kbd_panel_ = nullptr;
     lv_obj_t* kbd_text_label_ = nullptr;
     lv_obj_t* kbd_keys_[48] = {};

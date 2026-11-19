@@ -75,5 +75,9 @@ powershell -ExecutionPolicy Bypass -File scripts\flash-app.ps1
 - [x] 打字说话、音量指令、息屏待机
 - [x] 多页 UI（首页 / 应用 / 设置 / 对话 / 音乐 / 计算器 / 触摸测试，共 9 页）
 - [x] 消息提醒通道（首页消息卡，服务器 `POST /debug/notify` 推送）
+- [x] 小说页（服务器切页，170 字/页）
+- [x] 闹钟页（列出倒计时）
+- [x] 屏幕键盘（英文数字符号 + 发送）
 - [x] 音乐播放（服务器 `cores3-server\music` 里的 mp3 流式播放，设备端解码）
 - [ ] 相机预览、小说、闹钟、文件与 SSH
+

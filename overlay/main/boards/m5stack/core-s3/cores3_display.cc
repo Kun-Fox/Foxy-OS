@@ -162,7 +162,11 @@ void CoreS3LcdDisplay::UploadSnapshot(const std::string& url) {
     job->width = snap->header.w;
     job->height = snap->header.h;
     job->size = snap->data_size;
-    job->data = static_cast<uint8_t*>(malloc(job->size));
+    // 153KB 的整屏快照必须放 PSRAM：内部 SRAM 只剩 ~100KB，malloc 会失败甚至把任务压崩
+    job->data = static_cast<uint8_t*>(heap_caps_malloc(job->size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (job->data == nullptr) {
+        job->data = static_cast<uint8_t*>(malloc(job->size));
+    }
     if (job->data == nullptr) {
         lv_draw_buf_destroy(snap);
         delete job;
@@ -423,6 +427,7 @@ bool CoreS3LcdDisplay::HandleTouch(int x, int y, bool short_tap) {
     }
     return false;
 }
+
 
 
 
