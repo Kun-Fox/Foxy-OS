@@ -245,7 +245,7 @@ index 03e2baa..b28ad6c 100644
  
 diff --git a/main/boards/m5stack/core-s3/cores3_display.cc b/main/boards/m5stack/core-s3/cores3_display.cc
 new file mode 100644
-index 0000000..cac1ad4
+index 0000000..4f817f2
 --- /dev/null
 +++ b/main/boards/m5stack/core-s3/cores3_display.cc
 @@ -0,0 +1,310 @@
@@ -530,7 +530,7 @@ index 0000000..cac1ad4
 +    }
 +}
 +
-+bool CoreS3LcdDisplay::HandleTouch(int x, int y) {
++bool CoreS3LcdDisplay::HandleTouch(int x, int y, bool short_tap) {
 +    DisplayLockGuard lock(this);
 +    ESP_LOGI(TAG, "touch x=%d y=%d", x, y);
 +
@@ -554,14 +554,14 @@ index 0000000..cac1ad4
 +    }
 +
 +    // 控制条没命中，交给分页层（滑动切页 / 应用格点击）
-+    if (FoxyUI::Get().OnRelease(x, y, true)) {
++    if (FoxyUI::Get().OnRelease(x, y, short_tap)) {
 +        return true;
 +    }
 +    return false;
 +}
 diff --git a/main/boards/m5stack/core-s3/cores3_display.h b/main/boards/m5stack/core-s3/cores3_display.h
 new file mode 100644
-index 0000000..bf4738b
+index 0000000..e8c3dd9
 --- /dev/null
 +++ b/main/boards/m5stack/core-s3/cores3_display.h
 @@ -0,0 +1,46 @@
@@ -589,7 +589,7 @@ index 0000000..bf4738b
 +    void TouchPress(int x, int y);
 +
 +    // 返回 true 表示这次触摸被界面元素消费掉了
-+    bool HandleTouch(int x, int y);
++    bool HandleTouch(int x, int y, bool short_tap = true);
 +
 +private:
 +    void BuildControlBar();
@@ -613,10 +613,10 @@ index 0000000..bf4738b
 +#endif  // CORES3_DISPLAY_H
 diff --git a/main/boards/m5stack/core-s3/foxy_ui.cc b/main/boards/m5stack/core-s3/foxy_ui.cc
 new file mode 100644
-index 0000000..cdafa45
+index 0000000..47229e9
 --- /dev/null
 +++ b/main/boards/m5stack/core-s3/foxy_ui.cc
-@@ -0,0 +1,462 @@
+@@ -0,0 +1,465 @@
 +#include "foxy_ui.h"
 +
 +#include "audio/audio_codec.h"
@@ -743,7 +743,8 @@ index 0000000..cdafa45
 +    BuildSettings();
 +    BuildPageDots();
 +    lv_timer_create(ClockTimerCb, 1000, nullptr);
-+    SetPage(0);
++    // 开机落在首页，而不是原来的对话页，否则看起来和旧界面没区别
++    SetPage(1);
 +#if FOXY_UI_SELFTEST
 +    xTaskCreate(SelfTestTask, "ui_selftest", 4096, nullptr, 2, nullptr);
 +#endif
@@ -934,6 +935,8 @@ index 0000000..cdafa45
 +        return HandleSettingsTap(x, y);
 +    }
 +    if (page_ == 1) {
++        // 首页点一下就回到对话页，免得用户不知道要滑动
++        SetPage(0);
 +        return true;
 +    }
 +    return false;
@@ -1147,7 +1150,7 @@ index 0000000..7a4d45e
 +    int brightness_ = 100;
 +};
 diff --git a/main/boards/m5stack/core-s3/m5stack_core_s3.cc b/main/boards/m5stack/core-s3/m5stack_core_s3.cc
-index 83d1259..de810de 100644
+index 83d1259..63660c6 100644
 --- a/main/boards/m5stack/core-s3/m5stack_core_s3.cc
 +++ b/main/boards/m5stack/core-s3/m5stack_core_s3.cc
 @@ -1,9 +1,11 @@
@@ -1162,7 +1165,26 @@ index 83d1259..de810de 100644
  #include "i2c_device.h"
  #include "axp2101.h"
  
-@@ -122,16 +124,25 @@ private:
+@@ -34,8 +36,16 @@ public:
+     }
+ 
+     void SetBrightness(uint8_t brightness) {
+-        brightness = ((brightness + 641) >> 5);
+-        WriteReg(0x99, brightness);
++        if (brightness == 0) {
++            // 0 要真的全黑：原公式 (0+641)>>5 = 20，等于还有六成亮度
++            WriteReg(0x99, 0);
++            return;
++        }
++        uint8_t reg = ((brightness + 641) >> 5);
++        if (reg == 0) {
++            reg = 1;
++        }
++        WriteReg(0x99, reg);
+     }
+ };
+ 
+@@ -122,16 +132,25 @@ private:
      Pmic* pmic_;
      Aw9523* aw9523_;
      Ft6336* ft6336_;
@@ -1190,31 +1212,60 @@ index 83d1259..de810de 100644
          });
          power_save_timer_->OnExitSleepMode([this]() {
              GetDisplay()->SetPowerSaveMode(false);
-@@ -204,6 +215,12 @@ private:
-         if (touch_point.num > 0 && !was_touched) {
-             was_touched = true;
-             touch_start_time = esp_timer_get_time() / 1000; // 转换为毫秒
-+            touch_x_ = touch_point.x;
-+            touch_y_ = touch_point.y;
-+            ESP_LOGI(TAG, "touch press x=%d y=%d num=%d", touch_point.x, touch_point.y, (int)touch_point.num);
-+            if (display_ != nullptr) {
-+                display_->TouchPress(touch_point.x, touch_point.y);
+@@ -199,20 +218,42 @@ private:
+         
+         ft6336_->UpdateTouchPoint();
+         auto& touch_point = ft6336_->GetTouchPoint();
+-        
++        static int last_x = 0;
++        static int last_y = 0;
++
+         // 检测触摸开始
+-        if (touch_point.num > 0 && !was_touched) {
+-            was_touched = true;
+-            touch_start_time = esp_timer_get_time() / 1000; // 转换为毫秒
+-        } 
++        if (touch_point.num > 0) {
++            last_x = touch_point.x;
++            last_y = touch_point.y;
++            if (!was_touched) {
++                was_touched = true;
++                touch_start_time = esp_timer_get_time() / 1000; // 转换为毫秒
++                touch_x_ = touch_point.x;
++                touch_y_ = touch_point.y;
++                ESP_LOGI(TAG, "touch press x=%d y=%d num=%d", touch_point.x, touch_point.y, (int)touch_point.num);
++                // 息屏状态下摸一下就亮屏
++                if (power_save_timer_ != nullptr) {
++                    power_save_timer_->WakeUp();
++                }
++                if (display_ != nullptr) {
++                    display_->TouchPress(touch_point.x, touch_point.y);
++                }
 +            }
-         } 
++        }
          // 检测触摸释放
-         else if (touch_point.num == 0 && was_touched) {
-@@ -217,6 +234,10 @@ private:
+-        else if (touch_point.num == 0 && was_touched) {
++        else if (was_touched) {
+             was_touched = false;
+             int64_t touch_duration = (esp_timer_get_time() / 1000) - touch_start_time;
+-            
+-            // 只有短触才触发
+-            if (touch_duration < TOUCH_THRESHOLD_MS) {
+-                auto& app = Application::GetInstance();
++            bool short_tap = touch_duration < TOUCH_THRESHOLD_MS;
++            auto& app = Application::GetInstance();
++
++            // 滑动/点击都交给界面判定（用真实抬起坐标，否则滑动永远算不出来）
++            if (display_ != nullptr && display_->HandleTouch(last_x, last_y, short_tap)) {
++                return;
++            }
++
++            // 只有短触才触发配网/开始对话
++            if (short_tap) {
+                 if (app.GetDeviceState() == kDeviceStateStarting) {
                      EnterWifiConfigMode();
                      return;
-                 }
-+                // 先交给 CoreS3 界面判定（控制条 / 信息页），没命中才当作“开始对话”
-+                if (display_ != nullptr && display_->HandleTouch(touch_x_, touch_y_)) {
-+                    return;
-+                }
-                 app.ToggleChatState();
-             }
-         }
-@@ -264,7 +285,7 @@ private:
+@@ -264,7 +305,7 @@ private:
          io_config.cs_gpio_num = GPIO_NUM_3;
          io_config.dc_gpio_num = GPIO_NUM_35;
          io_config.spi_mode = 2;
@@ -1223,7 +1274,7 @@ index 83d1259..de810de 100644
          io_config.trans_queue_depth = 10;
          io_config.lcd_cmd_bits = 8;
          io_config.lcd_param_bits = 8;
-@@ -285,7 +306,7 @@ private:
+@@ -285,7 +326,7 @@ private:
          esp_lcd_panel_swap_xy(panel, DISPLAY_SWAP_XY);
          esp_lcd_panel_mirror(panel, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y);
  

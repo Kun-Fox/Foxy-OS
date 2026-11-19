@@ -279,7 +279,7 @@ void CoreS3LcdDisplay::HandleButton(int index) {
     }
 }
 
-bool CoreS3LcdDisplay::HandleTouch(int x, int y) {
+bool CoreS3LcdDisplay::HandleTouch(int x, int y, bool short_tap) {
     DisplayLockGuard lock(this);
     ESP_LOGI(TAG, "touch x=%d y=%d", x, y);
 
@@ -303,7 +303,7 @@ bool CoreS3LcdDisplay::HandleTouch(int x, int y) {
     }
 
     // 控制条没命中，交给分页层（滑动切页 / 应用格点击）
-    if (FoxyUI::Get().OnRelease(x, y, true)) {
+    if (FoxyUI::Get().OnRelease(x, y, short_tap)) {
         return true;
     }
     return false;

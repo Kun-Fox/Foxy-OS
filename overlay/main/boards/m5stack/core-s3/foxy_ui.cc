@@ -124,7 +124,8 @@ void FoxyUI::Init(CoreS3LcdDisplay* display) {
     BuildSettings();
     BuildPageDots();
     lv_timer_create(ClockTimerCb, 1000, nullptr);
-    SetPage(0);
+    // 开机落在首页，而不是原来的对话页，否则看起来和旧界面没区别
+    SetPage(1);
 #if FOXY_UI_SELFTEST
     xTaskCreate(SelfTestTask, "ui_selftest", 4096, nullptr, 2, nullptr);
 #endif
@@ -315,6 +316,8 @@ bool FoxyUI::OnRelease(int x, int y, bool short_tap) {
         return HandleSettingsTap(x, y);
     }
     if (page_ == 1) {
+        // 首页点一下就回到对话页，免得用户不知道要滑动
+        SetPage(0);
         return true;
     }
     return false;

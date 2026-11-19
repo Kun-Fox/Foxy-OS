@@ -36,8 +36,16 @@ public:
     }
 
     void SetBrightness(uint8_t brightness) {
-        brightness = ((brightness + 641) >> 5);
-        WriteReg(0x99, brightness);
+        if (brightness == 0) {
+            // 0 要真的全黑：原公式 (0+641)>>5 = 20，等于还有六成亮度
+            WriteReg(0x99, 0);
+            return;
+        }
+        uint8_t reg = ((brightness + 641) >> 5);
+        if (reg == 0) {
+            reg = 1;
+        }
+        WriteReg(0x99, reg);
     }
 };
 
@@ -210,32 +218,44 @@ private:
         
         ft6336_->UpdateTouchPoint();
         auto& touch_point = ft6336_->GetTouchPoint();
-        
+        static int last_x = 0;
+        static int last_y = 0;
+
         // 检测触摸开始
-        if (touch_point.num > 0 && !was_touched) {
-            was_touched = true;
-            touch_start_time = esp_timer_get_time() / 1000; // 转换为毫秒
-            touch_x_ = touch_point.x;
-            touch_y_ = touch_point.y;
-            ESP_LOGI(TAG, "touch press x=%d y=%d num=%d", touch_point.x, touch_point.y, (int)touch_point.num);
-            if (display_ != nullptr) {
-                display_->TouchPress(touch_point.x, touch_point.y);
+        if (touch_point.num > 0) {
+            last_x = touch_point.x;
+            last_y = touch_point.y;
+            if (!was_touched) {
+                was_touched = true;
+                touch_start_time = esp_timer_get_time() / 1000; // 转换为毫秒
+                touch_x_ = touch_point.x;
+                touch_y_ = touch_point.y;
+                ESP_LOGI(TAG, "touch press x=%d y=%d num=%d", touch_point.x, touch_point.y, (int)touch_point.num);
+                // 息屏状态下摸一下就亮屏
+                if (power_save_timer_ != nullptr) {
+                    power_save_timer_->WakeUp();
+                }
+                if (display_ != nullptr) {
+                    display_->TouchPress(touch_point.x, touch_point.y);
+                }
             }
-        } 
+        }
         // 检测触摸释放
-        else if (touch_point.num == 0 && was_touched) {
+        else if (was_touched) {
             was_touched = false;
             int64_t touch_duration = (esp_timer_get_time() / 1000) - touch_start_time;
-            
-            // 只有短触才触发
-            if (touch_duration < TOUCH_THRESHOLD_MS) {
-                auto& app = Application::GetInstance();
+            bool short_tap = touch_duration < TOUCH_THRESHOLD_MS;
+            auto& app = Application::GetInstance();
+
+            // 滑动/点击都交给界面判定（用真实抬起坐标，否则滑动永远算不出来）
+            if (display_ != nullptr && display_->HandleTouch(last_x, last_y, short_tap)) {
+                return;
+            }
+
+            // 只有短触才触发配网/开始对话
+            if (short_tap) {
                 if (app.GetDeviceState() == kDeviceStateStarting) {
                     EnterWifiConfigMode();
-                    return;
-                }
-                // 先交给 CoreS3 界面判定（控制条 / 信息页），没命中才当作“开始对话”
-                if (display_ != nullptr && display_->HandleTouch(touch_x_, touch_y_)) {
                     return;
                 }
                 app.ToggleChatState();

@@ -22,7 +22,7 @@ public:
     void TouchPress(int x, int y);
 
     // 返回 true 表示这次触摸被界面元素消费掉了
-    bool HandleTouch(int x, int y);
+    bool HandleTouch(int x, int y, bool short_tap = true);
 
 private:
     void BuildControlBar();
