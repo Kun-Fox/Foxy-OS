@@ -45,6 +45,8 @@ private:
     static void ClockTimerCb(lv_timer_t* timer);
 
     CoreS3LcdDisplay* display_ = nullptr;
+    // 全屏深色底板：滑页动画时页面挪开的那半边显示它，而不是露出底下的对话界面
+    lv_obj_t* backdrop_ = nullptr;
     lv_obj_t* home_ = nullptr;
     lv_obj_t* apps_ = nullptr;
     lv_obj_t* settings_ = nullptr;

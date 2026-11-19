@@ -111,6 +111,21 @@ bool HitTest(lv_obj_t* obj, int x, int y) {
     return x >= area.x1 && x <= area.x2 && y >= area.y1 && y <= area.y2;
 }
 
+// 把触摸横坐标映射成滑条数值：贴住轨道宽度算，不写死像素
+int ValueFromX(lv_obj_t* track, int x, int min_value, int max_value) {
+    if (track == nullptr) {
+        return min_value;
+    }
+    lv_area_t area;
+    lv_obj_get_coords(track, &area);
+    int width = area.x2 - area.x1;
+    if (width <= 0) {
+        return min_value;
+    }
+    int clamped = x < area.x1 ? area.x1 : (x > area.x2 ? area.x2 : x);
+    return min_value + ((clamped - area.x1) * (max_value - min_value)) / width;
+}
+
 #if FOXY_UI_SELFTEST
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -164,6 +179,17 @@ void FoxyUI::Init(CoreS3LcdDisplay* display) {
         volume_ = codec->output_volume();
     }
     DisplayLockGuard lock(display_);
+    // 先铺一块不透明的深色底板，再在上面建页面。
+    // 页面滑动时挪开的那半边会露出底板，而不是露出底下的对话界面/状态栏。
+    backdrop_ = lv_obj_create(lv_screen_active());
+    lv_obj_set_size(backdrop_, kScreenW, kScreenH);
+    lv_obj_set_pos(backdrop_, 0, 0);
+    lv_obj_set_style_bg_color(backdrop_, lv_color_hex(kBgDark), 0);
+    lv_obj_set_style_bg_opa(backdrop_, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(backdrop_, 0, 0);
+    lv_obj_set_style_radius(backdrop_, 0, 0);
+    lv_obj_clear_flag(backdrop_, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_move_foreground(backdrop_);
     home_ = MakePage(lv_screen_active());
     apps_ = MakePage(lv_screen_active());
     settings_ = MakePage(lv_screen_active());
@@ -291,37 +317,34 @@ void FoxyUI::BuildApps() {
 }
 
 void FoxyUI::BuildSettings() {
-    back_apps_ = MakeBackButton(settings_);
+    // 所有二级页统一：右上角返回键、左上角标题
+    back_apps_ = MakeButton(settings_, 250, 6, 62, 26, "‹ 返回");
     lv_obj_t* title = MakeLabel(settings_, "设置", 0xF2F2F5);
-    lv_obj_set_pos(title, 84, 12);
+    lv_obj_set_pos(title, 14, 12);
 
-    // 音量行：点一下或直接拖动都能调
-    lv_obj_t* vol_text = MakeLabel(settings_, "音量", kTextDim);
-    lv_obj_set_pos(vol_text, 20, 52);
-    vol_track_ = MakeCard(settings_, 96, 48, 200, 20);
-    lv_obj_set_style_radius(vol_track_, 10, 0);
+    // 音量：标题行在滑条上方，数值直接写在标签里，避免和轨道压字
+    vol_label_ = MakeLabel(settings_, "音量 0", 0xF2F2F5);
+    lv_obj_set_pos(vol_label_, 14, 44);
+    vol_track_ = MakeCard(settings_, 14, 70, 292, 16);
+    lv_obj_set_style_radius(vol_track_, 8, 0);
     lv_obj_set_style_bg_color(vol_track_, lv_color_hex(0x33333F), 0);
-    vol_knob_ = MakeCard(settings_, 96, 44, 14, 28);
-    lv_obj_set_style_radius(vol_knob_, 7, 0);
+    vol_knob_ = MakeCard(settings_, 14, 66, 12, 24);
+    lv_obj_set_style_radius(vol_knob_, 6, 0);
     lv_obj_set_style_bg_color(vol_knob_, lv_color_hex(kAccent), 0);
-    vol_label_ = MakeLabel(settings_, "0", 0xF2F2F5);
-    lv_obj_set_pos(vol_label_, 20, 52);
 
-    // 亮度行
-    lv_obj_t* bri_text = MakeLabel(settings_, "亮度", kTextDim);
-    lv_obj_set_pos(bri_text, 20, 108);
-    bri_track_ = MakeCard(settings_, 96, 104, 200, 20);
-    lv_obj_set_style_radius(bri_track_, 10, 0);
+    // 亮度
+    bri_label_ = MakeLabel(settings_, "亮度 100", 0xF2F2F5);
+    lv_obj_set_pos(bri_label_, 14, 108);
+    bri_track_ = MakeCard(settings_, 14, 134, 292, 16);
+    lv_obj_set_style_radius(bri_track_, 8, 0);
     lv_obj_set_style_bg_color(bri_track_, lv_color_hex(0x33333F), 0);
-    bri_knob_ = MakeCard(settings_, 96, 100, 14, 28);
-    lv_obj_set_style_radius(bri_knob_, 7, 0);
+    bri_knob_ = MakeCard(settings_, 14, 130, 12, 24);
+    lv_obj_set_style_radius(bri_knob_, 6, 0);
     lv_obj_set_style_bg_color(bri_knob_, lv_color_hex(0x6FA8FF), 0);
-    bri_label_ = MakeLabel(settings_, "100", 0xF2F2F5);
-    lv_obj_set_pos(bri_label_, 20, 108);
 
     info_label_ = MakeLabel(settings_, "读取中…", kTextDim);
-    lv_obj_set_pos(info_label_, 20, 148);
-    lv_obj_set_style_text_line_space(info_label_, 6, 0);
+    lv_obj_set_pos(info_label_, 14, 166);
+    lv_obj_set_style_text_line_space(info_label_, 2, 0);
 
     PlaceKnob(vol_track_, vol_knob_, volume_);
     PlaceKnob(bri_track_, bri_knob_, brightness_);
@@ -509,6 +532,14 @@ void FoxyUI::SetPage(int page) {
     if (display_ != nullptr) {
         display_->SetChatVisible(page_ == kPageChat);
     }
+    // 对话页要把底板藏起来，否则底板会盖住原生对话界面
+    if (backdrop_ != nullptr) {
+        if (page_ == kPageChat) {
+            lv_obj_add_flag(backdrop_, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_clear_flag(backdrop_, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
     lv_obj_t* pages[] = {home_, apps_, settings_, applist_, toollist_, touchtest_, calc_};
     for (lv_obj_t* p : pages) {
         if (p != nullptr) {
@@ -594,21 +625,19 @@ bool FoxyUI::OnRelease(int x, int y, bool short_tap) {
     bool horizontal = (dx > kSwipeThreshold && dx > dy * 2 && dx > -dy * 2) ||
                       (dx < -kSwipeThreshold && -dx > dy * 2 && -dx > -dy * 2);
     if (horizontal) {
+        // 按方向区分：左滑 = 去下一页，右滑 = 回上一页。
         if (dx < 0) {
             if (page_ == kPageHome) {
                 SetPage(kPageApps);
             }
         } else {
-            if (page_ == kPageApps || page_ == kPageSettings || page_ == kPageAppList ||
-                page_ == kPageToolList) {
+            if (page_ == kPageApps) {
+                SetPage(kPageHome);
+            } else if (page_ == kPageSettings || page_ == kPageAppList || page_ == kPageToolList) {
                 SetPage(kPageApps);
-            } else if (page_ == kPageHome) {
-                // 首页右滑没有上一页，忽略
             } else if (page_ == kPageChat) {
                 SetPage(kPageHome);
-            } else if (page_ == kPageTouch) {
-                SetPage(kPageToolList);
-            } else if (page_ == kPageCalc) {
+            } else if (page_ == kPageTouch || page_ == kPageCalc) {
                 SetPage(kPageToolList);
             }
         }
@@ -714,15 +743,15 @@ bool FoxyUI::OnRelease(int x, int y, bool short_tap) {
 
 bool FoxyUI::HandleSettingsTap(int x, int y) {
     DisplayLockGuard lock(display_);
-    // 点音量/亮度条任何位置，直接跳到那个值，并进入拖动状态
-    if (HitTest(vol_track_, x, y) || (x >= 96 && x <= 296 && y >= 40 && y <= 76)) {
+    // 音量行（标签+轨道整块）点哪都能拖；亮度行同理
+    if (HitTest(vol_track_, x, y) || (y >= 40 && y <= 92)) {
         drag_ = 1;
-        SetVolume(((x - 96) * 100 + 100) / 200);
+        SetVolume(ValueFromX(vol_track_, x, 0, 100));
         return true;
     }
-    if (HitTest(bri_track_, x, y) || (x >= 96 && x <= 296 && y >= 96 && y <= 132)) {
+    if (HitTest(bri_track_, x, y) || (y >= 104 && y <= 156)) {
         drag_ = 2;
-        SetBrightness(10 + ((x - 96) * 90 + 100) / 200);
+        SetBrightness(ValueFromX(bri_track_, x, 10, 100));
         return true;
     }
     return true;
@@ -734,7 +763,8 @@ void FoxyUI::PlaceKnob(lv_obj_t* track, lv_obj_t* knob, int value) {
     }
     lv_area_t area;
     lv_obj_get_coords(track, &area);
-    int width = (area.x2 - area.x1 + 1) - 14;
+    int knob_w = lv_obj_get_width(knob);
+    int width = (area.x2 - area.x1 + 1) - knob_w;
     lv_obj_set_x(knob, area.x1 + (value * width) / 100);
 }
 
@@ -748,8 +778,8 @@ void FoxyUI::SetVolume(int value) {
     DisplayLockGuard lock(display_);
     PlaceKnob(vol_track_, vol_knob_, volume_);
     if (vol_label_ != nullptr) {
-        char buffer[8];
-        snprintf(buffer, sizeof(buffer), "%d", volume_);
+        char buffer[16];
+        snprintf(buffer, sizeof(buffer), "音量 %d", volume_);
         lv_label_set_text(vol_label_, buffer);
     }
     UpdateSettingsInfo();
@@ -765,8 +795,8 @@ void FoxyUI::SetBrightness(int value) {
     DisplayLockGuard lock(display_);
     PlaceKnob(bri_track_, bri_knob_, brightness_);
     if (bri_label_ != nullptr) {
-        char buffer[8];
-        snprintf(buffer, sizeof(buffer), "%d", brightness_);
+        char buffer[16];
+        snprintf(buffer, sizeof(buffer), "亮度 %d", brightness_);
         lv_label_set_text(bri_label_, buffer);
     }
     ESP_LOGI(TAG, "brightness -> %d", brightness_);
@@ -789,9 +819,9 @@ void FoxyUI::OnMove(int x, int y) {
         return;
     }
     if (drag_ == 1) {
-        SetVolume(((x - 96) * 100 + 100) / 200);
+        SetVolume(ValueFromX(vol_track_, x, 0, 100));
     } else if (drag_ == 2) {
-        SetBrightness(10 + ((x - 96) * 90 + 100) / 200);
+        SetBrightness(ValueFromX(bri_track_, x, 10, 100));
     }
 }
 
@@ -815,18 +845,18 @@ void FoxyUI::UpdateSettingsInfo() {
     }
     const esp_app_desc_t* desc = esp_app_get_description();
     char buffer[160];
-    snprintf(buffer, sizeof(buffer), "电池 %d%%%s\n音量 %d\nIP %s\n固件 %s", level,
-             charging ? " (充电中)" : "", volume_, ip, desc != nullptr ? desc->version : "?");
+    snprintf(buffer, sizeof(buffer), "电池 %d%%%s   音量 %d\nIP %s   固件 %s", level,
+             charging ? " 充电中" : "", volume_, ip, desc != nullptr ? desc->version : "?");
     DisplayLockGuard lock(display_);
     lv_label_set_text(info_label_, buffer);
     if (vol_label_ != nullptr) {
-        char vol[8];
-        snprintf(vol, sizeof(vol), "%d", volume_);
+        char vol[16];
+        snprintf(vol, sizeof(vol), "音量 %d", volume_);
         lv_label_set_text(vol_label_, vol);
     }
     if (bri_label_ != nullptr) {
-        char bri[8];
-        snprintf(bri, sizeof(bri), "%d", brightness_);
+        char bri[16];
+        snprintf(bri, sizeof(bri), "亮度 %d", brightness_);
         lv_label_set_text(bri_label_, bri);
     }
 }
