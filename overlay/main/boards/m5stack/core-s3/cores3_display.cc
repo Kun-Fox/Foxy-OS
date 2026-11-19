@@ -74,9 +74,15 @@ void CoreS3LcdDisplay::TouchMove(int x, int y) {
 void CoreS3LcdDisplay::SetChatMessage(const char* role, const char* content) {
     // 原生字幕照常更新（万一哪天要切回去），同时把我们自绘对话页上的字幕也改掉。
     LcdDisplay::SetChatMessage(role, content);
-    if (content != nullptr) {
-        FoxyUI::Get().SetChatText(content);
+    if (content == nullptr) {
+        return;
     }
+    // 唤醒提示是固件内置英文串，直接显示在中文界面上很突兀，这里换成中文。
+    std::string text(content);
+    if (text.find("Hi,ESP") != std::string::npos || text.find("Hi, ESP") != std::string::npos) {
+        text = "待命中，说 Hi ESP 或点屏幕叫我都行";
+    }
+    FoxyUI::Get().SetChatText(text);
 }
 
 void CoreS3LcdDisplay::SetChatVisible(bool visible) {
@@ -427,6 +433,7 @@ bool CoreS3LcdDisplay::HandleTouch(int x, int y, bool short_tap) {
     }
     return false;
 }
+
 
 
 

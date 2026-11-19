@@ -383,13 +383,21 @@ void FoxyUI::BuildToolList() {
     lv_obj_t* title = MakeLabel(toollist_, "工具", 0xF2F2F5);
     lv_obj_set_pos(title, 14, 12);
 
-    const char* names[5] = {"计算器", "触摸测试", "拍照测试", "文件", "SSH"};
-    for (int i = 0; i < 5; i++) {
-        int col = i % 2;
-        int row = i / 2;
-        lv_obj_t* cell = MakeCard(toollist_, kGridMargin + col * (kCellW + kGridGap),
-                                  kListTop + row * (kListCellH + kListGap), kCellW, kListCellH);
-        lv_obj_t* label = MakeLabel(cell, names[i], 0xF2F2F5);
+    // 第一行三个窄卡，第二行两个宽卡：五个工具分两行，视觉上不空一格。
+    const char* top_names[3] = {"计算器", "触摸测试", "拍照测试"};
+    const char* bottom_names[2] = {"文件", "SSH"};
+    const int top_w = 93;
+    const int bottom_w = 144;
+    for (int i = 0; i < 3; i++) {
+        lv_obj_t* cell = MakeCard(toollist_, kGridMargin + i * (top_w + kGridGap), kListTop,
+                                  top_w, kListCellH);
+        lv_obj_t* label = MakeLabel(cell, top_names[i], 0xF2F2F5);
+        lv_obj_align(label, LV_ALIGN_CENTER, 0, 0);
+    }
+    for (int i = 0; i < 2; i++) {
+        lv_obj_t* cell = MakeCard(toollist_, kGridMargin + i * (bottom_w + kGridGap),
+                                  kListTop + kListCellH + kListGap, bottom_w, kListCellH);
+        lv_obj_t* label = MakeLabel(cell, bottom_names[i], 0xF2F2F5);
         lv_obj_align(label, LV_ALIGN_CENTER, 0, 0);
     }
 }
@@ -990,6 +998,14 @@ void FoxyUI::SetPage(int page) {
             UpdateMusicPage();
             // 列表要从服务器拉，别卡住 UI 线程
             xTaskCreate(MusicRefreshTask, "music_list", 4096, nullptr, 3, nullptr);
+            // 没在播的时候也先把当前曲目的封面拉下来，页面打开就是满屏封面
+            if (!FoxyMusic::Get().IsPlaying()) {
+                int index = FoxyMusic::Get().CurrentIndex();
+                if (index < 0) {
+                    index = 0;
+                }
+                LoadMusicAssets(index);
+            }
             break;
         case kPageKeyboard:
             target = kbd_;
@@ -1243,10 +1259,22 @@ bool FoxyUI::OnRelease(int x, int y, bool short_tap) {
             SetPage(kPageApps);
             return true;
         }
-        int col = (x - kGridMargin) / (kCellW + kGridGap);
-        int row = (y - kListTop) / (kListCellH + kListGap);
-        if (col >= 0 && col <= 1 && row >= 0 && row <= 2) {
-            int index = row * 2 + col;
+        // 与 BuildToolList 的两行布局保持一致：上排 3 个 93 宽，下排 2 个 144 宽。
+        const int row_gap_y = kListCellH + kListGap;
+        int index = -1;
+        int y_in_grid = y - kListTop;
+        if (y_in_grid >= 0 && y_in_grid < kListCellH) {
+            int col = (x - kGridMargin) / (93 + kGridGap);
+            if (col >= 0 && col <= 2) {
+                index = col;
+            }
+        } else if (y_in_grid >= row_gap_y && y_in_grid < row_gap_y + kListCellH) {
+            int col = (x - kGridMargin) / (144 + kGridGap);
+            if (col >= 0 && col <= 1) {
+                index = 3 + col;
+            }
+        }
+        if (index >= 0) {
             if (index == 0) {
                 SetPage(kPageCalc);
             } else if (index == 1) {
@@ -1832,6 +1860,7 @@ void FoxyUI::BuildAlarm() {
     lv_label_set_long_mode(alarm_list_, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(alarm_list_, 292);
     lv_obj_set_pos(alarm_list_, 14, 80);
+    lv_obj_set_style_text_color(alarm_list_, lv_color_hex(0xF2F2F5), 0);
     lv_obj_set_style_text_line_space(alarm_list_, 6, 0);
 }
 
@@ -1881,7 +1910,7 @@ void FoxyUI::AlarmFetch() {
     cJSON* list = cJSON_GetObjectItem(root, "alarms");
     int count = cJSON_GetArraySize(list);
     if (count == 0) {
-        lines = "没有正在倒计时的闹钟。\n\n说一句\"三分钟后叫我\"就行。";
+        lines = "暂时没有闹钟。\n说一句「三分钟后叫我」就行。";
     } else {
         for (int i = 0; i < count && i < 5; i++) {
             cJSON* item = cJSON_GetArrayItem(list, i);
@@ -1900,3 +1929,5 @@ void FoxyUI::AlarmFetch() {
     cJSON_Delete(root);
     SetAlarmText(lines);
 }
+
+
