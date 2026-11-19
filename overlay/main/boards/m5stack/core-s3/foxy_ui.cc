@@ -1086,6 +1086,9 @@ void FoxyUI::GoBack() {
         case kPageChat:
             SetPage(kPageHome);
             break;
+        case kPageKeyboard:
+            SetPage(kPageChat);
+            break;
         default:
             break;
     }
@@ -1174,6 +1177,13 @@ bool FoxyUI::OnRelease(int x, int y, bool short_tap) {
             SetPage(kPageHome);
         } else if (page_ != kPageHome) {
             GoBack();
+        }
+        return true;
+    }
+    if (page_ == kPageChat) {
+        // 对话页下半屏是字幕区：点它打开屏幕键盘，用来打字而不是说话。
+        if (y >= 132) {
+            SetPage(kPageKeyboard);
         }
         return true;
     }

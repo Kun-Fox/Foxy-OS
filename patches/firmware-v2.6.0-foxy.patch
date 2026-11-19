@@ -1488,10 +1488,10 @@ index 0000000..554a746
 +#endif  // FOXY_MUSIC_H
 diff --git a/main/boards/m5stack/core-s3/foxy_ui.cc b/main/boards/m5stack/core-s3/foxy_ui.cc
 new file mode 100644
-index 0000000..532eede
+index 0000000..f4c3e68
 --- /dev/null
 +++ b/main/boards/m5stack/core-s3/foxy_ui.cc
-@@ -0,0 +1,1933 @@
+@@ -0,0 +1,1943 @@
 +#include "foxy_ui.h"
 +
 +#include "audio/audio_codec.h"
@@ -2580,6 +2580,9 @@ index 0000000..532eede
 +        case kPageChat:
 +            SetPage(kPageHome);
 +            break;
++        case kPageKeyboard:
++            SetPage(kPageChat);
++            break;
 +        default:
 +            break;
 +    }
@@ -2668,6 +2671,13 @@ index 0000000..532eede
 +            SetPage(kPageHome);
 +        } else if (page_ != kPageHome) {
 +            GoBack();
++        }
++        return true;
++    }
++    if (page_ == kPageChat) {
++        // 对话页下半屏是字幕区：点它打开屏幕键盘，用来打字而不是说话。
++        if (y >= 132) {
++            SetPage(kPageKeyboard);
 +        }
 +        return true;
 +    }

@@ -94,7 +94,7 @@ powershell -ExecutionPolicy Bypass -File scripts\flash-app.ps1
 - **小说页**：左右滑翻页，点左 1/3 上一页、右 1/3 下一页。
 - **闹钟页**：显示正在倒计时的闹钟。
 - **工具页**：计算器（按下即有高亮反馈）、触摸测试、拍照测试、文件/SSH（占位）。
-- **键盘页**：工具 → 计算器旁的键盘入口（当前从对话页长按可进，见下文）；QWERTY + 符号层 + 空格/退格/发送，发送后自动回到对话页并开口。
+- **键盘页**：对话页点下半屏（字幕区）打开键盘；QWERTY + 符号层 + 空格/退格/发送，发送后自动回到对话页并开口。
 
 电脑端（服务器）：
 
@@ -102,3 +102,4 @@ powershell -ExecutionPolicy Bypass -File scripts\flash-app.ps1
 - 小说：`F:\cores3-server\novels\*.txt`，按 170 字切页。
 - 语音/文字指令：放首歌、暂停、下一首、停止播放、拍张照、三分钟后叫我（支持中文数字）。
 - 远程调试接口：`/debug/say`（让设备说话）、`/debug/notify`（推消息卡）、`/debug/push`（任意 JSON）、`/debug/screen/upload`（设备截图回传）、`/debug/music/*`、`/debug/novel/*`、`/debug/alarms`。
+
