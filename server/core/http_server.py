@@ -108,6 +108,30 @@ class SimpleHttpServer:
         except Exception as e:
             return web.json_response({"ok": False, "error": str(e)}, status=500)
 
+    async def handle_debug_notify(self, request):
+        """给设备首页消息卡推一条消息：POST /debug/notify {"text": "..."}。"""
+        from core.utils import conn_registry
+
+        try:
+            data = await request.json()
+        except Exception:
+            data = {}
+        text = (data.get("text") or "").strip()
+        if not text:
+            return web.json_response({"ok": False, "error": "text 不能为空"}, status=400)
+        connections = conn_registry.all_devices()
+        if not connections:
+            return web.json_response({"ok": False, "error": "没有在线的设备连接"}, status=404)
+        payload = json.dumps({"type": "foxy", "message": text}, ensure_ascii=False)
+        sent = []
+        for device_id, conn in connections.items():
+            try:
+                await conn.websocket.send(payload)
+                sent.append(device_id)
+            except Exception as e:
+                self.logger.bind(tag=TAG).error(f"推送消息失败 {device_id}: {e}")
+        return web.json_response({"ok": bool(sent), "devices": sent})
+
     async def handle_debug_state(self, request):
         """查看当前在线的设备连接。"""
         from core.utils import conn_registry
@@ -122,6 +146,78 @@ class SimpleHttpServer:
                 }
             )
         return web.json_response({"ok": True, "devices": devices})
+
+    def _music_dir(self):
+        import os
+
+        return os.environ.get("FOXY_MUSIC_DIR", r"F:\cores3-server\music")
+
+    def _music_tracks(self):
+        import os
+
+        folder = self._music_dir()
+        if not os.path.isdir(folder):
+            return []
+        tracks = []
+        for name in sorted(os.listdir(folder)):
+            if not name.lower().endswith(".mp3"):
+                continue
+            path = os.path.join(folder, name)
+            try:
+                size = os.path.getsize(path)
+            except OSError:
+                continue
+            tracks.append({"name": name, "size": size})
+        return tracks
+
+    async def handle_debug_music_list(self, request):
+        """曲库列表：扫描 F:\\cores3-server\\music 下的 mp3。"""
+        tracks = self._music_tracks()
+        return web.json_response({"ok": True, "tracks": tracks, "dir": self._music_dir()})
+
+    async def handle_debug_music_file(self, request):
+        """按索引流式返回 mp3，设备自己解码播放。"""
+        import os
+
+        tracks = self._music_tracks()
+        try:
+            index = int(request.query.get("index", "0"))
+        except ValueError:
+            index = 0
+        if index < 0 or index >= len(tracks):
+            return web.Response(status=404, text="no such track")
+        path = os.path.join(self._music_dir(), tracks[index]["name"])
+        return web.FileResponse(
+            path,
+            headers={
+                "Content-Type": "audio/mpeg",
+                "Cache-Control": "no-store",
+                "Accept-Ranges": "none",
+            },
+        )
+
+    async def handle_debug_music_control(self, request):
+        """远程控制设备播放：POST /debug/music/control {"action":"play","index":0}。"""
+        from core.utils import conn_registry
+
+        try:
+            data = await request.json()
+        except Exception:
+            data = {}
+        action = (data.get("action") or "play").strip()
+        index = data.get("index", -1)
+        connections = conn_registry.all_devices()
+        if not connections:
+            return web.json_response({"ok": False, "error": "没有在线的设备连接"}, status=404)
+        payload = json.dumps({"type": "music", "action": action, "index": index}, ensure_ascii=False)
+        sent = []
+        for device_id, conn in connections.items():
+            try:
+                await conn.websocket.send(payload)
+                sent.append(device_id)
+            except Exception as e:
+                self.logger.bind(tag=TAG).error(f"音乐控制失败 {device_id}: {e}")
+        return web.json_response({"ok": bool(sent), "devices": sent, "action": action, "index": index})
 
     async def start(self):
         try:
@@ -168,6 +264,12 @@ class SimpleHttpServer:
                         web.get("/debug/state", self.handle_debug_state),
                         # 直接调用设备端 MCP 工具（音量/亮度等），不经过大模型
                         web.post("/debug/tool", self.handle_debug_tool),
+                        # 给首页消息卡推一条消息
+                        web.post("/debug/notify", self.handle_debug_notify),
+                        # 音乐：曲库列表 + 按索引流式取 mp3
+                        web.get("/debug/music/list", self.handle_debug_music_list),
+                        web.get("/debug/music/file", self.handle_debug_music_file),
+                        web.post("/debug/music/control", self.handle_debug_music_control),
                     ]
                 )
 

@@ -88,6 +88,10 @@ void CoreS3LcdDisplay::ShowMessageCard(const std::string& text) {
     FoxyUI::Get().PushMessage(text);
 }
 
+void CoreS3LcdDisplay::OnMusicCommand(const std::string& action, int index) {
+    FoxyUI::Get().HandleMusicCommand(action, index);
+}
+
 void CoreS3LcdDisplay::BuildControlBar() {
     DisplayLockGuard lock(this);
     auto lvgl_theme = static_cast<LvglTheme*>(current_theme_);

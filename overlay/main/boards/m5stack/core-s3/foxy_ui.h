@@ -23,6 +23,8 @@ public:
 
     // 首页消息卡（服务器推送用）
     void PushMessage(const std::string& text);
+    // 服务器远程控制音乐（play/pause/next/prev/stop/refresh）
+    void HandleMusicCommand(const std::string& action, int index);
 
 private:
     void BuildHome();
@@ -32,6 +34,10 @@ private:
     void BuildToolList();
     void BuildTouchTest();
     void BuildCalculator();
+    void BuildMusic();
+    void UpdateMusicPage();
+    bool HandleMusicTap(int x, int y);
+    static void MusicRefreshTask(void* arg);
     void UpdateTouchTest(int x, int y);
     void UpdateCalcDisplay();
     void HandleCalcKey(int index);
@@ -58,6 +64,12 @@ private:
     lv_obj_t* touch_dot_ = nullptr;
     lv_obj_t* calc_ = nullptr;
     lv_obj_t* calc_label_ = nullptr;
+    // 音乐页
+    lv_obj_t* music_ = nullptr;
+    lv_obj_t* music_status_ = nullptr;
+    lv_obj_t* music_rows_[4] = {nullptr, nullptr, nullptr, nullptr};
+    lv_obj_t* music_play_ = nullptr;
+    lv_obj_t* back_music_ = nullptr;
     std::string calc_input_;
     double calc_acc_ = 0;
     char calc_op_ = 0;  // '+', '-', '*', '/'，0 表示没有待计算的操作
@@ -79,7 +91,7 @@ private:
     lv_obj_t* vol_plus_ = nullptr;
     lv_obj_t* bri_minus_ = nullptr;
     lv_obj_t* bri_plus_ = nullptr;
-    lv_obj_t* dots_[8] = {nullptr};
+    lv_obj_t* dots_[16] = {nullptr};
 
     int page_ = 0;
     int press_x_ = 0;

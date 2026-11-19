@@ -65,6 +65,11 @@ public:
     virtual bool IsMonochrome() const { return false; }
     virtual bool SupportsGuiOperations() const { return false; }
     virtual void SetHideSubtitle(bool hide) { (void)hide; }
+    // Foxy: 服务器推来的音乐控制（play/pause/next/prev/stop/refresh），板级可覆写
+    virtual void OnMusicCommand(const std::string& action, int index) {
+        (void)action;
+        (void)index;
+    }
     virtual bool InsertAnimDialog(const char* name, uint32_t duration_ms) {
         (void)name;
         (void)duration_ms;

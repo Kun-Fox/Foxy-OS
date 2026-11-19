@@ -772,6 +772,15 @@ void Application::InitializeProtocol() {
                     display->ShowMessageCard(text);
                 });
             }
+        } else if (strcmp(type->valuestring, "music") == 0) {
+            // Foxy: 服务器远程控制音乐（网页/脚本点播）
+            auto action = cJSON_GetObjectItem(root, "action");
+            auto index = cJSON_GetObjectItem(root, "index");
+            if (cJSON_IsString(action)) {
+                std::string cmd = action->valuestring;
+                int track = cJSON_IsNumber(index) ? index->valueint : -1;
+                Schedule([display, cmd, track]() { display->OnMusicCommand(cmd, track); });
+            }
         } else if (strcmp(type->valuestring, "mcp") == 0) {
             auto payload = cJSON_GetObjectItem(root, "payload");
             if (cJSON_IsObject(payload)) {

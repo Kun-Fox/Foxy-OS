@@ -1,5 +1,18 @@
+diff --git a/main/CMakeLists.txt b/main/CMakeLists.txt
+index 45204d6..2fe9882 100644
+--- a/main/CMakeLists.txt
++++ b/main/CMakeLists.txt
+@@ -1226,6 +1226,8 @@ idf_component_register(SRCS ${SOURCES}
+                         bt
+                         fatfs
+                         xiaozhi-fonts
++                        esp_http_client
++                        espressif__esp_audio_codec
+                         ${MAIN_PRIV_REQUIRES_EXTRA}
+                     )
+ 
 diff --git a/main/application.cc b/main/application.cc
-index 300a36c..f39a717 100644
+index 300a36c..6de2309 100644
 --- a/main/application.cc
 +++ b/main/application.cc
 @@ -22,6 +22,10 @@
@@ -109,7 +122,7 @@ index 300a36c..f39a717 100644
                          }
                      }
                  });
-@@ -713,6 +764,14 @@ void Application::InitializeProtocol() {
+@@ -713,6 +764,23 @@ void Application::InitializeProtocol() {
                      display->SetEmotion(emotion_str.c_str());
                  });
              }
@@ -121,10 +134,19 @@ index 300a36c..f39a717 100644
 +                    display->ShowMessageCard(text);
 +                });
 +            }
++        } else if (strcmp(type->valuestring, "music") == 0) {
++            // Foxy: 服务器远程控制音乐（网页/脚本点播）
++            auto action = cJSON_GetObjectItem(root, "action");
++            auto index = cJSON_GetObjectItem(root, "index");
++            if (cJSON_IsString(action)) {
++                std::string cmd = action->valuestring;
++                int track = cJSON_IsNumber(index) ? index->valueint : -1;
++                Schedule([display, cmd, track]() { display->OnMusicCommand(cmd, track); });
++            }
          } else if (strcmp(type->valuestring, "mcp") == 0) {
              auto payload = cJSON_GetObjectItem(root, "payload");
              if (cJSON_IsObject(payload)) {
-@@ -809,6 +868,33 @@ void Application::DismissAlert() {
+@@ -809,6 +877,33 @@ void Application::DismissAlert() {
      }
  }
  
@@ -158,7 +180,7 @@ index 300a36c..f39a717 100644
  void Application::ToggleChatState() { xEventGroupSetBits(event_group_, MAIN_EVENT_TOGGLE_CHAT); }
  
  void Application::StartListening() { xEventGroupSetBits(event_group_, MAIN_EVENT_START_LISTENING); }
-@@ -1033,6 +1119,10 @@ void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
+@@ -1033,6 +1128,10 @@ void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
  void Application::HandleStateChangedEvent() {
      DeviceState new_state = state_machine_.GetState();
      clock_ticks_ = 0;
@@ -169,7 +191,7 @@ index 300a36c..f39a717 100644
      // Any state change invalidates a pending deferred listening start;
      // the Listening case below re-arms it when needed.
      pending_listening_start_ = false;
-@@ -1056,6 +1146,9 @@ void Application::HandleStateChangedEvent() {
+@@ -1056,6 +1155,9 @@ void Application::HandleStateChangedEvent() {
              }
              audio_service_.EnableVoiceProcessing(false);
              audio_service_.EnableWakeWordDetection(true);
@@ -179,7 +201,7 @@ index 300a36c..f39a717 100644
              break;
          case kDeviceStateConnecting:
              display->SetStatus(Lang::Strings::CONNECTING);
-@@ -1408,10 +1501,8 @@ bool Application::CanEnterSleepMode() {
+@@ -1408,10 +1510,8 @@ bool Application::CanEnterSleepMode() {
          return false;
      }
  
@@ -245,10 +267,10 @@ index 03e2baa..b28ad6c 100644
  
 diff --git a/main/boards/m5stack/core-s3/cores3_display.cc b/main/boards/m5stack/core-s3/cores3_display.cc
 new file mode 100644
-index 0000000..a1efd3d
+index 0000000..7d5974c
 --- /dev/null
 +++ b/main/boards/m5stack/core-s3/cores3_display.cc
-@@ -0,0 +1,335 @@
+@@ -0,0 +1,339 @@
 +#include "cores3_display.h"
 +
 +#include "application.h"
@@ -337,6 +359,10 @@ index 0000000..a1efd3d
 +
 +void CoreS3LcdDisplay::ShowMessageCard(const std::string& text) {
 +    FoxyUI::Get().PushMessage(text);
++}
++
++void CoreS3LcdDisplay::OnMusicCommand(const std::string& action, int index) {
++    FoxyUI::Get().HandleMusicCommand(action, index);
 +}
 +
 +void CoreS3LcdDisplay::BuildControlBar() {
@@ -586,10 +612,10 @@ index 0000000..a1efd3d
 +}
 diff --git a/main/boards/m5stack/core-s3/cores3_display.h b/main/boards/m5stack/core-s3/cores3_display.h
 new file mode 100644
-index 0000000..1066c92
+index 0000000..5863340
 --- /dev/null
 +++ b/main/boards/m5stack/core-s3/cores3_display.h
-@@ -0,0 +1,52 @@
+@@ -0,0 +1,53 @@
 +#ifndef CORES3_DISPLAY_H
 +#define CORES3_DISPLAY_H
 +
@@ -612,6 +638,7 @@ index 0000000..1066c92
 +
 +    // 服务器推送的消息卡
 +    void ShowMessageCard(const std::string& text) override;
++    void OnMusicCommand(const std::string& action, int index) override;
 +
 +    // 按下时记录起点（供分页滑动判定）
 +    void TouchPress(int x, int y);
@@ -642,17 +669,499 @@ index 0000000..1066c92
 +};
 +
 +#endif  // CORES3_DISPLAY_H
+diff --git a/main/boards/m5stack/core-s3/foxy_music.cc b/main/boards/m5stack/core-s3/foxy_music.cc
+new file mode 100644
+index 0000000..7836db3
+--- /dev/null
++++ b/main/boards/m5stack/core-s3/foxy_music.cc
+@@ -0,0 +1,408 @@
++#include "foxy_music.h"
++
++#include <cstdio>
++#include <cstring>
++#include <mutex>
++
++#include <cJSON.h>
++#include <esp_err.h>
++#include <esp_http_client.h>
++#include <esp_log.h>
++#include <esp_mp3_dec.h>
++#include <freertos/FreeRTOS.h>
++#include <freertos/task.h>
++
++#include "application.h"
++#include "audio/audio_codec.h"
++#include "audio/audio_service.h"
++#include "device_state.h"
++#include "settings.h"
++
++static const char* TAG = "FoxyMusic";
++
++namespace {
++
++constexpr int kOutputSampleRate = 24000;
++constexpr int kChunkSamples = 480;      // 20ms @24k
++constexpr int kReadBufferSize = 8192;
++constexpr int kTaskStack = 14336;
++
++// 线性插值到 24k 单声道，攒够 20ms 就推一次喇叭
++class Resampler {
++public:
++    void Push(AudioCodec* codec, const float* src, size_t frames, int channels, int in_rate,
++              std::vector<int16_t>& out, int* elapsed_ms) {
++        if (in_rate != in_rate_ || channels != channels_) {
++            in_rate_ = in_rate;
++            channels_ = channels;
++            pos_ = 0.0;
++            ESP_LOGI(TAG, "stream %d Hz %d ch", in_rate_, channels_);
++        }
++        double step = static_cast<double>(in_rate_) / kOutputSampleRate;
++        for (size_t i = 0; i < frames; ++i) {
++            const float* frame = src + i * channels_;
++            float l = frame[0];
++            float r = channels_ > 1 ? frame[1] : l;
++            float mono = (l + r) * 0.5f;
++            last_ = mono;
++            pos_ += step;
++            while (pos_ >= 1.0) {
++                pos_ -= 1.0;
++                out.push_back(static_cast<int16_t>(last_ * 32767.0f));
++                if (static_cast<int>(out.size()) >= kChunkSamples) {
++                    if (codec != nullptr) {
++                        codec->OutputData(out);
++                    }
++                    out.clear();
++                    *elapsed_ms += kChunkSamples * 1000 / kOutputSampleRate;
++                }
++            }
++        }
++    }
++
++private:
++    int in_rate_ = 0;
++    int channels_ = 0;
++    double pos_ = 0.0;
++    float last_ = 0.0f;
++};
++
++}  // namespace
++
++FoxyMusic& FoxyMusic::Get() {
++    static FoxyMusic instance;
++    return instance;
++}
++
++void FoxyMusic::Init(AudioCodec* codec) {
++    codec_ = codec;
++    ServerBase(nullptr, 0);
++    ESP_LOGI(TAG, "music ready, server=%s", base_url_.c_str());
++}
++
++void FoxyMusic::ServerBase(char* out, size_t size) const {
++    std::string url = "http://192.168.3.10:8003";
++    Settings settings("wifi", false);
++    std::string ota = settings.GetString("ota_url");
++    size_t scheme = ota.find("://");
++    if (scheme != std::string::npos) {
++        size_t host_start = scheme + 3;
++        size_t path = ota.find('/', host_start);
++        std::string host = (path == std::string::npos) ? ota : ota.substr(0, path);
++        if (host.size() > 10) {
++            url = host;
++        }
++    }
++    const_cast<FoxyMusic*>(this)->base_url_ = url;
++    if (out != nullptr && size > 0) {
++        snprintf(out, size, "%s", url.c_str());
++    }
++}
++
++void FoxyMusic::Refresh() {
++    ServerBase(nullptr, 0);
++    char url[192];
++    snprintf(url, sizeof(url), "%s/debug/music/list", base_url_.c_str());
++
++    esp_http_client_config_t cfg = {};
++    cfg.url = url;
++    cfg.timeout_ms = 6000;
++    cfg.buffer_size = 2048;
++    esp_http_client_handle_t client = esp_http_client_init(&cfg);
++    if (client == nullptr) {
++        ESP_LOGW(TAG, "no client");
++        return;
++    }
++
++    std::string body;
++    esp_err_t open_ret = esp_http_client_open(client, 0);
++    int status = 0;
++    if (open_ret == ESP_OK) {
++        esp_http_client_fetch_headers(client);
++        status = esp_http_client_get_status_code(client);
++        char buf[512];
++        int read = 0;
++        while ((read = esp_http_client_read(client, buf, sizeof(buf))) > 0) {
++            body.append(buf, read);
++            if (body.size() > 8192) {
++                break;
++            }
++        }
++    } else {
++        ESP_LOGW(TAG, "open %s failed: %s", url, esp_err_to_name(open_ret));
++    }
++    esp_http_client_close(client);
++    esp_http_client_cleanup(client);
++    ESP_LOGI(TAG, "list http=%d status=%d body=%d bytes", (int)open_ret, status,
++             (int)body.size());
++
++    if (body.empty()) {
++        ESP_LOGW(TAG, "playlist empty (server offline?)");
++        return;
++    }
++
++    cJSON* root = cJSON_Parse(body.c_str());
++    if (root == nullptr) {
++        ESP_LOGW(TAG, "playlist json invalid");
++        return;
++    }
++    cJSON* tracks = cJSON_GetObjectItem(root, "tracks");
++    std::vector<std::string> names;
++    std::vector<int> durations;
++    if (cJSON_IsArray(tracks)) {
++        cJSON* item = nullptr;
++        cJSON_ArrayForEach(item, tracks) {
++            cJSON* name = cJSON_GetObjectItem(item, "name");
++            cJSON* duration = cJSON_GetObjectItem(item, "duration_ms");
++            if (cJSON_IsString(name)) {
++                names.emplace_back(name->valuestring);
++                durations.push_back(cJSON_IsNumber(duration) ? duration->valueint : 0);
++            }
++        }
++    }
++    cJSON_Delete(root);
++
++    std::lock_guard<std::mutex> lock(list_mutex_);
++    names_ = std::move(names);
++    durations_ms_ = std::move(durations);
++    ESP_LOGI(TAG, "playlist: %d track(s)", static_cast<int>(names_.size()));
++}
++
++int FoxyMusic::TrackCount() const {
++    std::lock_guard<std::mutex> lock(list_mutex_);
++    return static_cast<int>(names_.size());
++}
++
++std::string FoxyMusic::TrackName(int index) const {
++    std::lock_guard<std::mutex> lock(list_mutex_);
++    if (index < 0 || index >= static_cast<int>(names_.size())) {
++        return std::string();
++    }
++    return names_[index];
++}
++
++int FoxyMusic::TrackDurationMs(int index) const {
++    std::lock_guard<std::mutex> lock(list_mutex_);
++    if (index < 0 || index >= static_cast<int>(durations_ms_.size())) {
++        return 0;
++    }
++    return durations_ms_[index];
++}
++
++void FoxyMusic::Play(int index) {
++    if (codec_ == nullptr) {
++        return;
++    }
++    if (TrackCount() == 0) {
++        Refresh();
++    }
++    if (TrackCount() == 0) {
++        return;
++    }
++    if (index < 0) {
++        index = 0;
++    }
++    if (index >= TrackCount()) {
++        index = 0;
++    }
++
++    int new_generation = generation_.fetch_add(1) + 1;
++    stop_ = true;
++    vTaskDelay(pdMS_TO_TICKS(150));  // 给上一个任务收尾的时间
++    stop_ = false;
++    paused_ = false;
++    index_ = index;
++    elapsed_seconds_ = 0;
++    playing_ = true;
++
++    // 播放期间不要跟语音抢喇叭和麦克风
++    auto& app = Application::GetInstance();
++    app.SetDeviceState(kDeviceStateIdle);
++    app.GetAudioService().EnableVoiceProcessing(false);
++
++    if (xTaskCreate(TaskEntry, "foxy_music", kTaskStack, this, 4, nullptr) != pdPASS) {
++        ESP_LOGE(TAG, "task create failed");
++        playing_ = false;
++        return;
++    }
++    ESP_LOGI(TAG, "play index=%d gen=%d name=%s", index, new_generation,
++             TrackName(index).c_str());
++}
++
++void FoxyMusic::TogglePause() {
++    if (!playing_) {
++        return;
++    }
++    paused_ = !paused_;
++    ESP_LOGI(TAG, "paused=%d", paused_.load() ? 1 : 0);
++}
++
++void FoxyMusic::Next() {
++    if (TrackCount() == 0) {
++        return;
++    }
++    Play((CurrentIndex() + 1) % TrackCount());
++}
++
++void FoxyMusic::Prev() {
++    if (TrackCount() == 0) {
++        return;
++    }
++    int index = CurrentIndex() - 1;
++    if (index < 0) {
++        index = TrackCount() - 1;
++    }
++    Play(index);
++}
++
++void FoxyMusic::Stop() {
++    stop_ = true;
++    playing_ = false;
++    paused_ = false;
++    elapsed_seconds_ = 0;
++    ESP_LOGI(TAG, "stop");
++}
++
++bool FoxyMusic::IsPlaying() const {
++    return playing_;
++}
++
++bool FoxyMusic::IsPaused() const {
++    return paused_;
++}
++
++int FoxyMusic::CurrentIndex() const {
++    return index_;
++}
++
++int FoxyMusic::ElapsedSeconds() const {
++    return elapsed_seconds_;
++}
++
++std::string FoxyMusic::StatusText() const {
++    if (!playing_) {
++        return "未播放";
++    }
++    if (paused_) {
++        return "已暂停";
++    }
++    return "播放中";
++}
++
++void FoxyMusic::TaskEntry(void* arg) {
++    auto* self = static_cast<FoxyMusic*>(arg);
++    int index = self->index_;
++    int generation = self->generation_;
++    self->TaskLoop(index, generation);
++    if (self->generation_ == generation) {
++        self->playing_ = false;
++    }
++    vTaskDelete(nullptr);
++}
++
++void FoxyMusic::TaskLoop(int index, int generation) {
++    char url[192];
++    snprintf(url, sizeof(url), "%s/debug/music/file?index=%d", base_url_.c_str(), index);
++
++    esp_http_client_config_t cfg = {};
++    cfg.url = url;
++    cfg.timeout_ms = 10000;
++    cfg.buffer_size = 2048;
++    esp_http_client_handle_t client = esp_http_client_init(&cfg);
++    if (client == nullptr) {
++        ESP_LOGE(TAG, "client init failed");
++        return;
++    }
++    if (esp_http_client_open(client, 0) != ESP_OK) {
++        ESP_LOGE(TAG, "open %s failed", url);
++        esp_http_client_cleanup(client);
++        return;
++    }
++    esp_http_client_fetch_headers(client);
++    int content_length = esp_http_client_get_content_length(client);
++    ESP_LOGI(TAG, "streaming %s (len=%d)", url, content_length);
++
++    esp_mp3_dec_register();
++    void* decoder = nullptr;
++    if (esp_mp3_dec_open(nullptr, 0, &decoder) != ESP_AUDIO_ERR_OK || decoder == nullptr) {
++        ESP_LOGE(TAG, "mp3 decoder open failed");
++        esp_http_client_close(client);
++        esp_http_client_cleanup(client);
++        return;
++    }
++
++    auto* frame_buf = static_cast<uint8_t*>(malloc(16384));
++    std::vector<uint8_t> pending;
++    pending.reserve(kReadBufferSize * 2);
++    std::vector<float> pcm;
++    std::vector<int16_t> out;
++    out.reserve(kChunkSamples);
++    Resampler resampler;
++    int elapsed_ms = 0;
++    bool eof = false;
++    std::vector<uint8_t> read_buf(kReadBufferSize);
++
++    while (!stop_ && generation_ == generation_) {
++        if (paused_) {
++            vTaskDelay(pdMS_TO_TICKS(60));
++            continue;
++        }
++        int read = esp_http_client_read(client, reinterpret_cast<char*>(read_buf.data()),
++                                       read_buf.size());
++        if (read <= 0) {
++            if (read < 0) {
++                ESP_LOGW(TAG, "read error %d", read);
++            }
++            eof = true;
++            break;
++        }
++        pending.insert(pending.end(), read_buf.begin(), read_buf.begin() + read);
++
++        esp_audio_dec_in_raw_t raw = {};
++        raw.buffer = pending.data();
++        raw.len = pending.size();
++
++        while (raw.len > 0 && !stop_ && generation_ == generation_) {
++            esp_audio_dec_out_frame_t frame = {};
++            frame.buffer = frame_buf;
++            frame.len = 16384;
++            esp_audio_dec_info_t info = {};
++            esp_audio_err_t ret = esp_mp3_dec_decode(decoder, &raw, &frame, &info);
++            if (ret != ESP_AUDIO_ERR_OK || frame.decoded_size == 0) {
++                break;  // 帧不完整，等更多数据
++            }
++            int channels = info.channel > 0 ? info.channel : 2;
++            int rate = info.sample_rate > 0 ? info.sample_rate : 44100;
++            size_t frames = frame.decoded_size / (2 * channels);
++            pcm.resize(frames * channels);
++            for (size_t i = 0; i < frames * channels; ++i) {
++                int16_t sample = static_cast<int16_t>(frame_buf[2 * i] | (frame_buf[2 * i + 1] << 8));
++                pcm[i] = sample / 32768.0f;
++            }
++            resampler.Push(codec_, pcm.data(), frames, channels, rate, out, &elapsed_ms);
++            elapsed_seconds_ = elapsed_ms / 1000;
++            if (paused_) {
++                break;
++            }
++        }
++
++        // 已消费的部分丢掉
++        size_t consumed = pending.size() - raw.len;
++        if (consumed > 0) {
++            pending.erase(pending.begin(), pending.begin() + consumed);
++        }
++        if (pending.size() > 256 * 1024) {
++            pending.clear();  // 防御性：解码器认不出数据时不要无限吃内存
++        }
++    }
++
++    if (!out.empty() && codec_ != nullptr) {
++        codec_->OutputData(out);
++    }
++    free(frame_buf);
++    esp_mp3_dec_close(decoder);
++    esp_http_client_close(client);
++    esp_http_client_cleanup(client);
++    ESP_LOGI(TAG, "task end index=%d eof=%d elapsed=%dms", index, eof ? 1 : 0, elapsed_ms);
++}
++
+diff --git a/main/boards/m5stack/core-s3/foxy_music.h b/main/boards/m5stack/core-s3/foxy_music.h
+new file mode 100644
+index 0000000..d0bfe04
+--- /dev/null
++++ b/main/boards/m5stack/core-s3/foxy_music.h
+@@ -0,0 +1,61 @@
++#ifndef FOXY_MUSIC_H
++#define FOXY_MUSIC_H
++
++#include <atomic>
++#include <memory>
++#include <string>
++#include <vector>
++
++class AudioCodec;
++
++// 音乐播放器：曲目列表放在电脑侧的 cores3-server\music 里，
++// 设备通过 /debug/music/* 拉列表与音频流，MP3 在本地解码后直接推给喇叭。
++// 与语音链路互斥：播放期间关掉语音处理（麦克风/唤醒词），停止后恢复。
++class FoxyMusic {
++public:
++    static FoxyMusic& Get();
++
++    void Init(AudioCodec* codec);
++    void Refresh();  // 从服务器拉一次曲目列表（网络失败时保留旧列表）
++
++    int TrackCount() const;
++    std::string TrackName(int index) const;
++    int TrackDurationMs(int index) const;
++
++    void Play(int index);
++    void TogglePause();
++    void Next();
++    void Prev();
++    void Stop();
++
++    bool IsPlaying() const;
++    bool IsPaused() const;
++    int CurrentIndex() const;
++    int ElapsedSeconds() const;
++    std::string StatusText() const;
++
++private:
++    FoxyMusic() = default;
++    FoxyMusic(const FoxyMusic&) = delete;
++    FoxyMusic& operator=(const FoxyMusic&) = delete;
++
++    static void TaskEntry(void* arg);
++    void TaskLoop(int index, int generation);
++    void ServerBase(char* out, size_t size) const;
++
++    AudioCodec* codec_ = nullptr;
++    std::string base_url_;
++
++    mutable std::mutex list_mutex_;
++    std::vector<std::string> names_;
++    std::vector<int> durations_ms_;
++
++    std::atomic<int> index_{ -1 };
++    std::atomic<int> generation_{ 0 };
++    std::atomic<bool> playing_{ false };
++    std::atomic<bool> paused_{ false };
++    std::atomic<bool> stop_{ false };
++    std::atomic<int> elapsed_seconds_{ 0 };
++};
++
++#endif  // FOXY_MUSIC_H
 diff --git a/main/boards/m5stack/core-s3/foxy_ui.cc b/main/boards/m5stack/core-s3/foxy_ui.cc
 new file mode 100644
-index 0000000..e255cf9
+index 0000000..e0a61bf
 --- /dev/null
 +++ b/main/boards/m5stack/core-s3/foxy_ui.cc
-@@ -0,0 +1,902 @@
+@@ -0,0 +1,1075 @@
 +#include "foxy_ui.h"
 +
 +#include "audio/audio_codec.h"
 +#include "board.h"
 +#include "cores3_display.h"
++#include "foxy_music.h"
 +
 +#include <esp_app_desc.h>
 +#include <esp_log.h>
@@ -684,7 +1193,8 @@ index 0000000..e255cf9
 +constexpr int kPageToolList = 5;  // 工具列表：计算器/触摸测试/拍照测试/文件/SSH
 +constexpr int kPageTouch = 6;     // 触摸测试
 +constexpr int kPageCalc = 7;      // 计算器
-+constexpr int kPageCount = 8;
++constexpr int kPageMusic = 8;     // 音乐
++constexpr int kPageCount = 9;
 +
 +// 二级列表页的网格参数（顶部留出返回键的位置）
 +constexpr int kListTop = 40;
@@ -828,6 +1338,7 @@ index 0000000..e255cf9
 +    if (codec != nullptr) {
 +        volume_ = codec->output_volume();
 +    }
++    FoxyMusic::Get().Init(codec);
 +    DisplayLockGuard lock(display_);
 +    // 先铺一块不透明的深色底板，再在上面建页面。
 +    // 页面滑动时挪开的那半边会露出底板，而不是露出底下的对话界面/状态栏。
@@ -847,6 +1358,7 @@ index 0000000..e255cf9
 +    toollist_ = MakePage(lv_screen_active());
 +    touchtest_ = MakePage(lv_screen_active());
 +    calc_ = MakePage(lv_screen_active());
++    music_ = MakePage(lv_screen_active());
 +    BuildHome();
 +    BuildApps();
 +    BuildSettings();
@@ -854,6 +1366,7 @@ index 0000000..e255cf9
 +    BuildToolList();
 +    BuildTouchTest();
 +    BuildCalculator();
++    BuildMusic();
 +    // 对话页的返回键挂在最顶层，原生对话界面也在这层，所以必须比它更新
 +    chat_back_ = MakeButton(lv_layer_top(), 4, 4, 62, 26, "‹ 首页");
 +    lv_obj_add_flag(chat_back_, LV_OBJ_FLAG_HIDDEN);
@@ -864,6 +1377,7 @@ index 0000000..e255cf9
 +    lv_obj_move_foreground(toollist_);
 +    lv_obj_move_foreground(touchtest_);
 +    lv_obj_move_foreground(calc_);
++    lv_obj_move_foreground(music_);
 +    lv_timer_create(ClockTimerCb, 1000, nullptr);
 +    // 开机落在首页，而不是原来的对话页，否则看起来和旧界面没区别
 +    SetPage(kPageHome);
@@ -1086,6 +1600,149 @@ index 0000000..e255cf9
 +    UpdateCalcDisplay();
 +}
 +
++void FoxyUI::BuildMusic() {
++    back_music_ = MakeButton(music_, 250, 6, 62, 26, "‹ 返回");
++    lv_obj_t* title = MakeLabel(music_, "音乐", 0xF2F2F5);
++    lv_obj_set_pos(title, 14, 12);
++    music_status_ = MakeLabel(music_, "未播放", kTextDim);
++    lv_obj_set_pos(music_status_, 110, 12);
++
++    // 曲目行：最多显示 4 首，点哪行播哪首
++    for (int i = 0; i < 4; i++) {
++        lv_obj_t* row = MakeCard(music_, 10, 42 + i * 40, 300, 34);
++        lv_obj_set_style_radius(row, 8, 0);
++        lv_obj_clear_flag(row, LV_OBJ_FLAG_CLICKABLE);
++        music_rows_[i] = MakeLabel(row, "-", 0xF2F2F5);
++        lv_obj_set_width(music_rows_[i], 280);
++        lv_label_set_long_mode(music_rows_[i], LV_LABEL_LONG_CLIP);
++        lv_obj_align(music_rows_[i], LV_ALIGN_LEFT_MID, 10, 0);
++    }
++
++    // 底部三个按钮：上一首 / 播放暂停 / 下一首
++    MakeButton(music_, 10, 206, 92, 30, "上一首");
++    music_play_ = MakeButton(music_, 114, 206, 92, 30, "播放");
++    MakeButton(music_, 218, 206, 92, 30, "下一首");
++    UpdateMusicPage();
++}
++
++void FoxyUI::UpdateMusicPage() {
++    if (music_ == nullptr) {
++        return;
++    }
++    DisplayLockGuard lock(display_);
++    auto& music = FoxyMusic::Get();
++    int count = music.TrackCount();
++    for (int i = 0; i < 4; i++) {
++        if (music_rows_[i] == nullptr) {
++            continue;
++        }
++        if (i < count) {
++            char line[96];
++            int seconds = music.TrackDurationMs(i) / 1000;
++            if (i == music.CurrentIndex() && music.IsPlaying()) {
++                snprintf(line, sizeof(line), "▶ %s", music.TrackName(i).c_str());
++            } else if (seconds > 0) {
++                snprintf(line, sizeof(line), "%d. %s  %d:%02d", i + 1, music.TrackName(i).c_str(),
++                         seconds / 60, seconds % 60);
++            } else {
++                snprintf(line, sizeof(line), "%d. %s", i + 1, music.TrackName(i).c_str());
++            }
++            lv_label_set_text(music_rows_[i], line);
++        } else {
++            lv_label_set_text(music_rows_[i], i == 0 ? "曲库为空：把 mp3 放进 cores3-server\\music" : "");
++        }
++    }
++    if (music_play_ != nullptr) {
++        lv_label_set_text(lv_obj_get_child(music_play_, 0),
++                          music.IsPlaying() && !music.IsPaused() ? "暂停" : "播放");
++    }
++    if (music_status_ != nullptr) {
++        if (count == 0) {
++            lv_label_set_text(music_status_, "无曲目");
++        } else if (music.IsPlaying()) {
++            char status[48];
++            snprintf(status, sizeof(status), "%s %d:%02d", music.StatusText().c_str(),
++                     music.ElapsedSeconds() / 60, music.ElapsedSeconds() % 60);
++            lv_label_set_text(music_status_, status);
++        } else {
++            lv_label_set_text(music_status_, "未播放");
++        }
++    }
++}
++
++void FoxyUI::HandleMusicCommand(const std::string& action, int index) {
++    auto& music = FoxyMusic::Get();
++    ESP_LOGI(TAG, "music cmd=%s index=%d", action.c_str(), index);
++    if (action == "play") {
++        if (index >= 0) {
++            music.Play(index);
++        } else if (music.IsPlaying()) {
++            music.TogglePause();
++        } else {
++            music.Play(music.CurrentIndex() < 0 ? 0 : music.CurrentIndex());
++        }
++    } else if (action == "pause") {
++        music.TogglePause();
++    } else if (action == "stop") {
++        music.Stop();
++    } else if (action == "next") {
++        music.Next();
++    } else if (action == "prev") {
++        music.Prev();
++    } else if (action == "refresh") {
++        music.Refresh();
++    }
++    if (page_ == kPageMusic) {
++        UpdateMusicPage();
++    }
++}
++
++void FoxyUI::MusicRefreshTask(void* arg) {
++    (void)arg;
++    FoxyMusic::Get().Refresh();
++    if (FoxyUI::Get().page() == kPageMusic) {
++        FoxyUI::Get().UpdateMusicPage();
++    }
++    vTaskDelete(nullptr);
++}
++
++bool FoxyUI::HandleMusicTap(int x, int y) {
++    if (HitTest(back_music_, x, y)) {
++        FoxyMusic::Get().Stop();
++        SetPage(kPageAppList);
++        return true;
++    }
++    auto& music = FoxyMusic::Get();
++    if (y >= 42 && y < 42 + 4 * 40) {
++        int index = (y - 42) / 40;
++        if (index >= 0 && index < music.TrackCount()) {
++            if (index == music.CurrentIndex() && music.IsPlaying()) {
++                music.TogglePause();
++            } else {
++                music.Play(index);
++            }
++            UpdateMusicPage();
++        }
++        return true;
++    }
++    if (y >= 206) {
++        if (x < 102) {
++            music.Prev();
++        } else if (x < 206) {
++            if (music.IsPlaying()) {
++                music.TogglePause();
++            } else {
++                music.Play(music.CurrentIndex() < 0 ? 0 : music.CurrentIndex());
++            }
++        } else {
++            music.Next();
++        }
++        UpdateMusicPage();
++        return true;
++    }
++    return true;
++}
++
 +void FoxyUI::UpdateCalcDisplay() {
 +    if (calc_label_ == nullptr) {
 +        return;
@@ -1190,7 +1847,7 @@ index 0000000..e255cf9
 +            lv_obj_clear_flag(backdrop_, LV_OBJ_FLAG_HIDDEN);
 +        }
 +    }
-+    lv_obj_t* pages[] = {home_, apps_, settings_, applist_, toollist_, touchtest_, calc_};
++    lv_obj_t* pages[] = {home_, apps_, settings_, applist_, toollist_, touchtest_, calc_, music_};
 +    for (lv_obj_t* p : pages) {
 +        if (p != nullptr) {
 +            lv_obj_add_flag(p, LV_OBJ_FLAG_HIDDEN);
@@ -1209,6 +1866,10 @@ index 0000000..e255cf9
 +        dir = 1;
 +    } else if (page_ == kPageHome && page_before == kPageApps) {
 +        dir = -1;
++    }
++    if (page_ == kPageChat) {
++        // 进对话页就和音乐说再见，别和 TTS 抢喇叭
++        FoxyMusic::Get().Stop();
 +    }
 +    lv_obj_t* target = nullptr;
 +    switch (page_) {
@@ -1234,6 +1895,12 @@ index 0000000..e255cf9
 +            break;
 +        case kPageCalc:
 +            target = calc_;
++            break;
++        case kPageMusic:
++            target = music_;
++            UpdateMusicPage();
++            // 列表要从服务器拉，别卡住 UI 线程
++            xTaskCreate(MusicRefreshTask, "music_list", 4096, nullptr, 3, nullptr);
 +            break;
 +        default:
 +            break;  // 对话页交给基类渲染
@@ -1289,6 +1956,8 @@ index 0000000..e255cf9
 +                SetPage(kPageHome);
 +            } else if (page_ == kPageTouch || page_ == kPageCalc) {
 +                SetPage(kPageToolList);
++            } else if (page_ == kPageMusic) {
++                SetPage(kPageAppList);
 +            }
 +        }
 +        return true;
@@ -1336,7 +2005,12 @@ index 0000000..e255cf9
 +        int row = (y - kListTop) / 90;
 +        if (col >= 0 && col <= 1 && row >= 0 && row <= 1) {
 +            static const char* names[4] = {"音乐", "小说", "闹钟", "相机"};
-+            ESP_LOGI(TAG, "app %s not implemented yet", names[row * 2 + col]);
++            int index = row * 2 + col;
++            if (index == 0) {
++                SetPage(kPageMusic);
++            } else {
++                ESP_LOGI(TAG, "app %s not implemented yet", names[index]);
++            }
 +        }
 +        return true;
 +    }
@@ -1382,6 +2056,9 @@ index 0000000..e255cf9
 +            SetPage(kPageToolList);
 +        }
 +        return true;
++    }
++    if (page_ == kPageMusic) {
++        return HandleMusicTap(x, y);
 +    }
 +    if (page_ == kPageChat && HitTest(chat_back_, x, y)) {
 +        ESP_LOGI(TAG, "chat back to home");
@@ -1548,14 +2225,18 @@ index 0000000..e255cf9
 +
 +void FoxyUI::ClockTimerCb(lv_timer_t* timer) {
 +    (void)timer;
-+    FoxyUI::Get().UpdateClock();
++    auto& ui = FoxyUI::Get();
++    ui.UpdateClock();
++    if (ui.page() == kPageMusic) {
++        ui.UpdateMusicPage();
++    }
 +}
 diff --git a/main/boards/m5stack/core-s3/foxy_ui.h b/main/boards/m5stack/core-s3/foxy_ui.h
 new file mode 100644
-index 0000000..39f05ca
+index 0000000..af47693
 --- /dev/null
 +++ b/main/boards/m5stack/core-s3/foxy_ui.h
-@@ -0,0 +1,98 @@
+@@ -0,0 +1,110 @@
 +#pragma once
 +
 +#include <lvgl.h>
@@ -1581,6 +2262,8 @@ index 0000000..39f05ca
 +
 +    // 首页消息卡（服务器推送用）
 +    void PushMessage(const std::string& text);
++    // 服务器远程控制音乐（play/pause/next/prev/stop/refresh）
++    void HandleMusicCommand(const std::string& action, int index);
 +
 +private:
 +    void BuildHome();
@@ -1590,6 +2273,10 @@ index 0000000..39f05ca
 +    void BuildToolList();
 +    void BuildTouchTest();
 +    void BuildCalculator();
++    void BuildMusic();
++    void UpdateMusicPage();
++    bool HandleMusicTap(int x, int y);
++    static void MusicRefreshTask(void* arg);
 +    void UpdateTouchTest(int x, int y);
 +    void UpdateCalcDisplay();
 +    void HandleCalcKey(int index);
@@ -1616,6 +2303,12 @@ index 0000000..39f05ca
 +    lv_obj_t* touch_dot_ = nullptr;
 +    lv_obj_t* calc_ = nullptr;
 +    lv_obj_t* calc_label_ = nullptr;
++    // 音乐页
++    lv_obj_t* music_ = nullptr;
++    lv_obj_t* music_status_ = nullptr;
++    lv_obj_t* music_rows_[4] = {nullptr, nullptr, nullptr, nullptr};
++    lv_obj_t* music_play_ = nullptr;
++    lv_obj_t* back_music_ = nullptr;
 +    std::string calc_input_;
 +    double calc_acc_ = 0;
 +    char calc_op_ = 0;  // '+', '-', '*', '/'，0 表示没有待计算的操作
@@ -1637,7 +2330,7 @@ index 0000000..39f05ca
 +    lv_obj_t* vol_plus_ = nullptr;
 +    lv_obj_t* bri_minus_ = nullptr;
 +    lv_obj_t* bri_plus_ = nullptr;
-+    lv_obj_t* dots_[8] = {nullptr};
++    lv_obj_t* dots_[16] = {nullptr};
 +
 +    int page_ = 0;
 +    int press_x_ = 0;
@@ -1792,7 +2485,7 @@ index 83d1259..76a263e 100644
      }
  
 diff --git a/main/display/display.h b/main/display/display.h
-index c5b0c42..dc16be0 100644
+index c5b0c42..b7d063c 100644
 --- a/main/display/display.h
 +++ b/main/display/display.h
 @@ -49,6 +49,8 @@ public:
@@ -1804,6 +2497,18 @@ index c5b0c42..dc16be0 100644
      // Remove a matching message without clearing newer content, when supported.
      virtual void RemoveChatMessage(const char* role, const char* content) {}
      virtual void ClearChatMessages();
+@@ -63,6 +65,11 @@ public:
+     virtual bool IsMonochrome() const { return false; }
+     virtual bool SupportsGuiOperations() const { return false; }
+     virtual void SetHideSubtitle(bool hide) { (void)hide; }
++    // Foxy: 服务器推来的音乐控制（play/pause/next/prev/stop/refresh），板级可覆写
++    virtual void OnMusicCommand(const std::string& action, int index) {
++        (void)action;
++        (void)index;
++    }
+     virtual bool InsertAnimDialog(const char* name, uint32_t duration_ms) {
+         (void)name;
+         (void)duration_ms;
 diff --git a/main/display/lcd_display.cc b/main/display/lcd_display.cc
 index 7be9bad..a366020 100644
 --- a/main/display/lcd_display.cc

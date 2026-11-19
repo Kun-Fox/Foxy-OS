@@ -73,6 +73,7 @@ powershell -ExecutionPolicy Bypass -File scripts\flash-app.ps1
 
 - [x] 语音对话闭环（自建服务器 + Foxy 桥）
 - [x] 打字说话、音量指令、息屏待机
-- [ ] 四页 UI（首页 / 应用 / 设置 / 对话）
-- [ ] 消息提醒通道（QQ、邮箱、DSH 任务完成）
-- [ ] 音乐播放、相机预览、SD 图库
+- [x] 多页 UI（首页 / 应用 / 设置 / 对话 / 音乐 / 计算器 / 触摸测试，共 9 页）
+- [x] 消息提醒通道（首页消息卡，服务器 `POST /debug/notify` 推送）
+- [x] 音乐播放（服务器 `cores3-server\music` 里的 mp3 流式播放，设备端解码）
+- [ ] 相机预览、小说、闹钟、文件与 SSH

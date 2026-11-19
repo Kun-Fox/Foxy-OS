@@ -3,6 +3,7 @@
 #include "audio/audio_codec.h"
 #include "board.h"
 #include "cores3_display.h"
+#include "foxy_music.h"
 
 #include <esp_app_desc.h>
 #include <esp_log.h>
@@ -34,7 +35,8 @@ constexpr int kPageAppList = 4;   // 应用列表：音乐/小说/闹钟/相机
 constexpr int kPageToolList = 5;  // 工具列表：计算器/触摸测试/拍照测试/文件/SSH
 constexpr int kPageTouch = 6;     // 触摸测试
 constexpr int kPageCalc = 7;      // 计算器
-constexpr int kPageCount = 8;
+constexpr int kPageMusic = 8;     // 音乐
+constexpr int kPageCount = 9;
 
 // 二级列表页的网格参数（顶部留出返回键的位置）
 constexpr int kListTop = 40;
@@ -178,6 +180,7 @@ void FoxyUI::Init(CoreS3LcdDisplay* display) {
     if (codec != nullptr) {
         volume_ = codec->output_volume();
     }
+    FoxyMusic::Get().Init(codec);
     DisplayLockGuard lock(display_);
     // 先铺一块不透明的深色底板，再在上面建页面。
     // 页面滑动时挪开的那半边会露出底板，而不是露出底下的对话界面/状态栏。
@@ -197,6 +200,7 @@ void FoxyUI::Init(CoreS3LcdDisplay* display) {
     toollist_ = MakePage(lv_screen_active());
     touchtest_ = MakePage(lv_screen_active());
     calc_ = MakePage(lv_screen_active());
+    music_ = MakePage(lv_screen_active());
     BuildHome();
     BuildApps();
     BuildSettings();
@@ -204,6 +208,7 @@ void FoxyUI::Init(CoreS3LcdDisplay* display) {
     BuildToolList();
     BuildTouchTest();
     BuildCalculator();
+    BuildMusic();
     // 对话页的返回键挂在最顶层，原生对话界面也在这层，所以必须比它更新
     chat_back_ = MakeButton(lv_layer_top(), 4, 4, 62, 26, "‹ 首页");
     lv_obj_add_flag(chat_back_, LV_OBJ_FLAG_HIDDEN);
@@ -214,6 +219,7 @@ void FoxyUI::Init(CoreS3LcdDisplay* display) {
     lv_obj_move_foreground(toollist_);
     lv_obj_move_foreground(touchtest_);
     lv_obj_move_foreground(calc_);
+    lv_obj_move_foreground(music_);
     lv_timer_create(ClockTimerCb, 1000, nullptr);
     // 开机落在首页，而不是原来的对话页，否则看起来和旧界面没区别
     SetPage(kPageHome);
@@ -436,6 +442,149 @@ void FoxyUI::BuildCalculator() {
     UpdateCalcDisplay();
 }
 
+void FoxyUI::BuildMusic() {
+    back_music_ = MakeButton(music_, 250, 6, 62, 26, "‹ 返回");
+    lv_obj_t* title = MakeLabel(music_, "音乐", 0xF2F2F5);
+    lv_obj_set_pos(title, 14, 12);
+    music_status_ = MakeLabel(music_, "未播放", kTextDim);
+    lv_obj_set_pos(music_status_, 110, 12);
+
+    // 曲目行：最多显示 4 首，点哪行播哪首
+    for (int i = 0; i < 4; i++) {
+        lv_obj_t* row = MakeCard(music_, 10, 42 + i * 40, 300, 34);
+        lv_obj_set_style_radius(row, 8, 0);
+        lv_obj_clear_flag(row, LV_OBJ_FLAG_CLICKABLE);
+        music_rows_[i] = MakeLabel(row, "-", 0xF2F2F5);
+        lv_obj_set_width(music_rows_[i], 280);
+        lv_label_set_long_mode(music_rows_[i], LV_LABEL_LONG_CLIP);
+        lv_obj_align(music_rows_[i], LV_ALIGN_LEFT_MID, 10, 0);
+    }
+
+    // 底部三个按钮：上一首 / 播放暂停 / 下一首
+    MakeButton(music_, 10, 206, 92, 30, "上一首");
+    music_play_ = MakeButton(music_, 114, 206, 92, 30, "播放");
+    MakeButton(music_, 218, 206, 92, 30, "下一首");
+    UpdateMusicPage();
+}
+
+void FoxyUI::UpdateMusicPage() {
+    if (music_ == nullptr) {
+        return;
+    }
+    DisplayLockGuard lock(display_);
+    auto& music = FoxyMusic::Get();
+    int count = music.TrackCount();
+    for (int i = 0; i < 4; i++) {
+        if (music_rows_[i] == nullptr) {
+            continue;
+        }
+        if (i < count) {
+            char line[96];
+            int seconds = music.TrackDurationMs(i) / 1000;
+            if (i == music.CurrentIndex() && music.IsPlaying()) {
+                snprintf(line, sizeof(line), "▶ %s", music.TrackName(i).c_str());
+            } else if (seconds > 0) {
+                snprintf(line, sizeof(line), "%d. %s  %d:%02d", i + 1, music.TrackName(i).c_str(),
+                         seconds / 60, seconds % 60);
+            } else {
+                snprintf(line, sizeof(line), "%d. %s", i + 1, music.TrackName(i).c_str());
+            }
+            lv_label_set_text(music_rows_[i], line);
+        } else {
+            lv_label_set_text(music_rows_[i], i == 0 ? "曲库为空：把 mp3 放进 cores3-server\\music" : "");
+        }
+    }
+    if (music_play_ != nullptr) {
+        lv_label_set_text(lv_obj_get_child(music_play_, 0),
+                          music.IsPlaying() && !music.IsPaused() ? "暂停" : "播放");
+    }
+    if (music_status_ != nullptr) {
+        if (count == 0) {
+            lv_label_set_text(music_status_, "无曲目");
+        } else if (music.IsPlaying()) {
+            char status[48];
+            snprintf(status, sizeof(status), "%s %d:%02d", music.StatusText().c_str(),
+                     music.ElapsedSeconds() / 60, music.ElapsedSeconds() % 60);
+            lv_label_set_text(music_status_, status);
+        } else {
+            lv_label_set_text(music_status_, "未播放");
+        }
+    }
+}
+
+void FoxyUI::HandleMusicCommand(const std::string& action, int index) {
+    auto& music = FoxyMusic::Get();
+    ESP_LOGI(TAG, "music cmd=%s index=%d", action.c_str(), index);
+    if (action == "play") {
+        if (index >= 0) {
+            music.Play(index);
+        } else if (music.IsPlaying()) {
+            music.TogglePause();
+        } else {
+            music.Play(music.CurrentIndex() < 0 ? 0 : music.CurrentIndex());
+        }
+    } else if (action == "pause") {
+        music.TogglePause();
+    } else if (action == "stop") {
+        music.Stop();
+    } else if (action == "next") {
+        music.Next();
+    } else if (action == "prev") {
+        music.Prev();
+    } else if (action == "refresh") {
+        music.Refresh();
+    }
+    if (page_ == kPageMusic) {
+        UpdateMusicPage();
+    }
+}
+
+void FoxyUI::MusicRefreshTask(void* arg) {
+    (void)arg;
+    FoxyMusic::Get().Refresh();
+    if (FoxyUI::Get().page() == kPageMusic) {
+        FoxyUI::Get().UpdateMusicPage();
+    }
+    vTaskDelete(nullptr);
+}
+
+bool FoxyUI::HandleMusicTap(int x, int y) {
+    if (HitTest(back_music_, x, y)) {
+        FoxyMusic::Get().Stop();
+        SetPage(kPageAppList);
+        return true;
+    }
+    auto& music = FoxyMusic::Get();
+    if (y >= 42 && y < 42 + 4 * 40) {
+        int index = (y - 42) / 40;
+        if (index >= 0 && index < music.TrackCount()) {
+            if (index == music.CurrentIndex() && music.IsPlaying()) {
+                music.TogglePause();
+            } else {
+                music.Play(index);
+            }
+            UpdateMusicPage();
+        }
+        return true;
+    }
+    if (y >= 206) {
+        if (x < 102) {
+            music.Prev();
+        } else if (x < 206) {
+            if (music.IsPlaying()) {
+                music.TogglePause();
+            } else {
+                music.Play(music.CurrentIndex() < 0 ? 0 : music.CurrentIndex());
+            }
+        } else {
+            music.Next();
+        }
+        UpdateMusicPage();
+        return true;
+    }
+    return true;
+}
+
 void FoxyUI::UpdateCalcDisplay() {
     if (calc_label_ == nullptr) {
         return;
@@ -540,7 +689,7 @@ void FoxyUI::SetPage(int page) {
             lv_obj_clear_flag(backdrop_, LV_OBJ_FLAG_HIDDEN);
         }
     }
-    lv_obj_t* pages[] = {home_, apps_, settings_, applist_, toollist_, touchtest_, calc_};
+    lv_obj_t* pages[] = {home_, apps_, settings_, applist_, toollist_, touchtest_, calc_, music_};
     for (lv_obj_t* p : pages) {
         if (p != nullptr) {
             lv_obj_add_flag(p, LV_OBJ_FLAG_HIDDEN);
@@ -559,6 +708,10 @@ void FoxyUI::SetPage(int page) {
         dir = 1;
     } else if (page_ == kPageHome && page_before == kPageApps) {
         dir = -1;
+    }
+    if (page_ == kPageChat) {
+        // 进对话页就和音乐说再见，别和 TTS 抢喇叭
+        FoxyMusic::Get().Stop();
     }
     lv_obj_t* target = nullptr;
     switch (page_) {
@@ -584,6 +737,12 @@ void FoxyUI::SetPage(int page) {
             break;
         case kPageCalc:
             target = calc_;
+            break;
+        case kPageMusic:
+            target = music_;
+            UpdateMusicPage();
+            // 列表要从服务器拉，别卡住 UI 线程
+            xTaskCreate(MusicRefreshTask, "music_list", 4096, nullptr, 3, nullptr);
             break;
         default:
             break;  // 对话页交给基类渲染
@@ -639,6 +798,8 @@ bool FoxyUI::OnRelease(int x, int y, bool short_tap) {
                 SetPage(kPageHome);
             } else if (page_ == kPageTouch || page_ == kPageCalc) {
                 SetPage(kPageToolList);
+            } else if (page_ == kPageMusic) {
+                SetPage(kPageAppList);
             }
         }
         return true;
@@ -686,7 +847,12 @@ bool FoxyUI::OnRelease(int x, int y, bool short_tap) {
         int row = (y - kListTop) / 90;
         if (col >= 0 && col <= 1 && row >= 0 && row <= 1) {
             static const char* names[4] = {"音乐", "小说", "闹钟", "相机"};
-            ESP_LOGI(TAG, "app %s not implemented yet", names[row * 2 + col]);
+            int index = row * 2 + col;
+            if (index == 0) {
+                SetPage(kPageMusic);
+            } else {
+                ESP_LOGI(TAG, "app %s not implemented yet", names[index]);
+            }
         }
         return true;
     }
@@ -732,6 +898,9 @@ bool FoxyUI::OnRelease(int x, int y, bool short_tap) {
             SetPage(kPageToolList);
         }
         return true;
+    }
+    if (page_ == kPageMusic) {
+        return HandleMusicTap(x, y);
     }
     if (page_ == kPageChat && HitTest(chat_back_, x, y)) {
         ESP_LOGI(TAG, "chat back to home");
@@ -898,5 +1067,9 @@ void FoxyUI::UpdateClock() {
 
 void FoxyUI::ClockTimerCb(lv_timer_t* timer) {
     (void)timer;
-    FoxyUI::Get().UpdateClock();
+    auto& ui = FoxyUI::Get();
+    ui.UpdateClock();
+    if (ui.page() == kPageMusic) {
+        ui.UpdateMusicPage();
+    }
 }
