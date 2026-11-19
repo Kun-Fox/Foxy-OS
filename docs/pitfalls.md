@@ -80,3 +80,9 @@
 
 ## 12. 调试探针要能关
 `FOXY_FPS_PROBE` 开着会让每 6 秒强制整屏重绘，白白发热耗电，还掩盖真实功耗表现。默认必须为 0。
+
+## 16. 音乐播放的四个新坑（2026-11-19）
+- `esp_http_client.h` 不在 main 的默认依赖里：报 `fatal error: esp_http_client.h: No such file or directory`，必须在 `main/CMakeLists.txt` 的 `PRIV_REQUIRES` 里加 `esp_http_client` 和 `espressif__esp_audio_codec`（托管组件要用带下划线的全名）。
+- 8KB 读缓冲放栈上直接编译失败：`-Werror=frame-larger-than=1536`，改成 `std::vector<uint8_t>` 走堆。
+- 核心代码不能 include 板级头（AGENTS.md 的规矩）：音乐控制走 `Display::OnMusicCommand(action, index)` 虚函数，板级 `CoreS3LcdDisplay` 覆写后转给 `FoxyUI::HandleMusicCommand`。
+- 选曲/服务端列表里中文文件名没问题（设备按 index 取流，不做 URL 编码），但曲目时长暂时算不出来，UI 只显示已播秒数。
