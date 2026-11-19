@@ -2,6 +2,8 @@
 #define FOXY_MUSIC_H
 
 #include <atomic>
+#include <cstdint>
+#include <utility>
 #include <memory>
 #include <string>
 #include <vector>
@@ -34,6 +36,17 @@ public:
     int ElapsedSeconds() const;
     std::string StatusText() const;
 
+    // 封面：服务端已经把它裁成 320x240 并转成 RGB565，设备只需要拉下来贴屏
+    bool LoadCover(int index);
+    const uint8_t* CoverData() const;
+
+    // 歌词：服务端返回同名 .lrc，按时间戳解析成 (毫秒, 文本)
+    bool LoadLyrics(int index);
+    std::string LyricAt(int elapsed_ms) const;
+
+    int DurationMs() const;
+    void SeekTo(int seconds);
+
 private:
     FoxyMusic() = default;
     FoxyMusic(const FoxyMusic&) = delete;
@@ -56,6 +69,11 @@ private:
     std::atomic<bool> paused_{ false };
     std::atomic<bool> stop_{ false };
     std::atomic<int> elapsed_seconds_{ 0 };
+    std::atomic<int> seek_seconds_{ 0 };
+
+    mutable std::mutex cover_mutex_;
+    std::vector<uint8_t> cover_;
+    std::vector<std::pair<int, std::string>> lyrics_;
 };
 
 #endif  // FOXY_MUSIC_H

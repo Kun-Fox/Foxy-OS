@@ -6,12 +6,14 @@
 #include "board.h"
 
 #include <esp_log.h>
+#include <esp_http_client.h>
 #include <esp_netif.h>
 #include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <lvgl.h>
 #include <cstdio>
+#include <cstring>
 
 LV_FONT_DECLARE(BUILTIN_TEXT_FONT);
 
@@ -69,6 +71,14 @@ void CoreS3LcdDisplay::TouchMove(int x, int y) {
     FoxyUI::Get().OnMove(x, y);
 }
 
+void CoreS3LcdDisplay::SetChatMessage(const char* role, const char* content) {
+    // 原生字幕照常更新（万一哪天要切回去），同时把我们自绘对话页上的字幕也改掉。
+    LcdDisplay::SetChatMessage(role, content);
+    if (content != nullptr) {
+        FoxyUI::Get().SetChatText(content);
+    }
+}
+
 void CoreS3LcdDisplay::SetChatVisible(bool visible) {
     lv_obj_t* objs[3] = {status_bar_, container_, bottom_bar_};
     for (auto* obj : objs) {
@@ -90,6 +100,82 @@ void CoreS3LcdDisplay::ShowMessageCard(const std::string& text) {
 
 void CoreS3LcdDisplay::OnMusicCommand(const std::string& action, int index) {
     FoxyUI::Get().HandleMusicCommand(action, index);
+}
+
+namespace {
+
+struct SnapshotJob {
+    std::string url;
+    uint8_t* data = nullptr;
+    int width = 0;
+    int height = 0;
+    size_t size = 0;
+};
+
+void SnapshotTask(void* arg) {
+    auto* job = static_cast<SnapshotJob*>(arg);
+    esp_http_client_config_t cfg = {};
+    cfg.url = job->url.c_str();
+    cfg.method = HTTP_METHOD_POST;
+    cfg.timeout_ms = 15000;
+    auto client = esp_http_client_init(&cfg);
+    if (client != nullptr) {
+        char wbuf[8], hbuf[8];
+        snprintf(wbuf, sizeof(wbuf), "%d", job->width);
+        snprintf(hbuf, sizeof(hbuf), "%d", job->height);
+        esp_http_client_set_header(client, "Content-Type", "application/octet-stream");
+        esp_http_client_set_header(client, "X-Width", wbuf);
+        esp_http_client_set_header(client, "X-Height", hbuf);
+        esp_http_client_set_header(client, "X-Format", "rgb565");
+        esp_http_client_set_post_field(client, reinterpret_cast<const char*>(job->data),
+                                       static_cast<int>(job->size));
+        esp_err_t err = esp_http_client_perform(client);
+        int status = esp_http_client_get_status_code(client);
+        ESP_LOGI(TAG, "snapshot upload %s status=%d size=%u err=%s", job->url.c_str(), status,
+                 (unsigned)job->size, esp_err_to_name(err));
+        esp_http_client_cleanup(client);
+    }
+    free(job->data);
+    delete job;
+    vTaskDelete(nullptr);
+}
+
+}  // namespace
+
+void CoreS3LcdDisplay::SetUiPage(int page) {
+    DisplayLockGuard lock(this);
+    FoxyUI::Get().SetPage(page);
+}
+
+void CoreS3LcdDisplay::UploadSnapshot(const std::string& url) {
+    lv_draw_buf_t* snap = nullptr;
+    {
+        DisplayLockGuard lock(this);
+        snap = lv_snapshot_take(lv_screen_active(), LV_COLOR_FORMAT_RGB565);
+    }
+    if (snap == nullptr) {
+        ESP_LOGE(TAG, "snapshot failed");
+        return;
+    }
+    auto* job = new SnapshotJob();
+    job->url = url;
+    job->width = snap->header.w;
+    job->height = snap->header.h;
+    job->size = snap->data_size;
+    job->data = static_cast<uint8_t*>(malloc(job->size));
+    if (job->data == nullptr) {
+        lv_draw_buf_destroy(snap);
+        delete job;
+        ESP_LOGE(TAG, "snapshot alloc failed");
+        return;
+    }
+    memcpy(job->data, snap->data, job->size);
+    lv_draw_buf_destroy(snap);
+    if (xTaskCreate(SnapshotTask, "snapshot", 8192, job, 3, nullptr) != pdPASS) {
+        free(job->data);
+        delete job;
+        ESP_LOGE(TAG, "snapshot task failed");
+    }
 }
 
 void CoreS3LcdDisplay::BuildControlBar() {
@@ -337,3 +423,7 @@ bool CoreS3LcdDisplay::HandleTouch(int x, int y, bool short_tap) {
     }
     return false;
 }
+
+
+
+

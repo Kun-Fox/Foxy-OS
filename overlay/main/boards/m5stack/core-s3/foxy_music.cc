@@ -212,13 +212,12 @@ void FoxyMusic::Play(int index) {
     stop_ = false;
     paused_ = false;
     index_ = index;
-    elapsed_seconds_ = 0;
+    elapsed_seconds_.store(seek_seconds_.load());
     playing_ = true;
 
-    // 播放期间不要跟语音抢喇叭和麦克风
-    auto& app = Application::GetInstance();
-    app.SetDeviceState(kDeviceStateIdle);
-    app.GetAudioService().EnableVoiceProcessing(false);
+    // 播放期间不要跟语音抢喇叭和麦克风；但**不动设备状态**，
+    // 否则状态机会把已经建立的语音通道关掉，放歌就等于把会话踢下线。
+    Application::GetInstance().GetAudioService().EnableVoiceProcessing(false);
 
     if (xTaskCreate(TaskEntry, "foxy_music", kTaskStack, this, 4, nullptr) != pdPASS) {
         ESP_LOGE(TAG, "task create failed");
@@ -260,6 +259,10 @@ void FoxyMusic::Stop() {
     playing_ = false;
     paused_ = false;
     elapsed_seconds_ = 0;
+    if (codec_ != nullptr) {
+        codec_->EnableOutput(true);
+    }
+    Application::GetInstance().GetAudioService().EnableVoiceProcessing(true);
     ESP_LOGI(TAG, "stop");
 }
 
@@ -379,7 +382,12 @@ void FoxyMusic::TaskLoop(int index, int generation) {
                 int16_t sample = static_cast<int16_t>(frame_buf[2 * i] | (frame_buf[2 * i + 1] << 8));
                 pcm[i] = sample / 32768.0f;
             }
-            resampler.Push(codec_, pcm.data(), frames, channels, rate, out, &elapsed_ms);
+            // seek：还没到目标位置就只解码不输出（解码比实时快，跳过很快）
+            AudioCodec* sink = (elapsed_ms < seek_seconds_ * 1000) ? nullptr : codec_;
+            resampler.Push(sink, pcm.data(), frames, channels, rate, out, &elapsed_ms);
+            if (sink == nullptr) {
+                out.clear();
+            }
             elapsed_seconds_ = elapsed_ms / 1000;
             if (paused_) {
                 break;
@@ -405,4 +413,137 @@ void FoxyMusic::TaskLoop(int index, int generation) {
     esp_http_client_cleanup(client);
     ESP_LOGI(TAG, "task end index=%d eof=%d elapsed=%dms", index, eof ? 1 : 0, elapsed_ms);
 }
+
+
+int FoxyMusic::DurationMs() const {
+    return TrackDurationMs(CurrentIndex());
+}
+
+void FoxyMusic::SeekTo(int seconds) {
+    if (TrackCount() == 0) {
+        return;
+    }
+    if (seconds < 0) {
+        seconds = 0;
+    }
+    seek_seconds_ = seconds;
+    Play(CurrentIndex());
+}
+
+bool FoxyMusic::LoadCover(int index) {
+    char url[192];
+    snprintf(url, sizeof(url), "%s/debug/music/cover?index=%d&fmt=rgb565&w=320&h=240",
+             base_url_.c_str(), index);
+    std::vector<uint8_t> buffer(320 * 240 * 2);
+
+    esp_http_client_config_t cfg = {};
+    cfg.url = url;
+    cfg.timeout_ms = 15000;
+    cfg.buffer_size = 4096;
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    if (client == nullptr) {
+        return false;
+    }
+    int total = 0;
+    if (esp_http_client_open(client, 0) == ESP_OK) {
+        esp_http_client_fetch_headers(client);
+        while (total < static_cast<int>(buffer.size())) {
+            int read = esp_http_client_read(client, reinterpret_cast<char*>(buffer.data() + total),
+                                            buffer.size() - total);
+            if (read <= 0) {
+                break;
+            }
+            total += read;
+        }
+    }
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+
+    if (total != static_cast<int>(buffer.size())) {
+        ESP_LOGW(TAG, "cover index=%d got %d bytes (want %d)", index, total,
+                 static_cast<int>(buffer.size()));
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(cover_mutex_);
+    cover_ = std::move(buffer);
+    ESP_LOGI(TAG, "cover index=%d ready", index);
+    return true;
+}
+
+const uint8_t* FoxyMusic::CoverData() const {
+    std::lock_guard<std::mutex> lock(cover_mutex_);
+    if (cover_.size() != 320u * 240u * 2u) {
+        return nullptr;
+    }
+    return cover_.data();
+}
+
+bool FoxyMusic::LoadLyrics(int index) {
+    char url[192];
+    snprintf(url, sizeof(url), "%s/debug/music/lyrics?index=%d", base_url_.c_str(), index);
+
+    esp_http_client_config_t cfg = {};
+    cfg.url = url;
+    cfg.timeout_ms = 8000;
+    cfg.buffer_size = 2048;
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    if (client == nullptr) {
+        return false;
+    }
+    std::string body;
+    if (esp_http_client_open(client, 0) == ESP_OK) {
+        esp_http_client_fetch_headers(client);
+        char buf[512];
+        int read = 0;
+        while ((read = esp_http_client_read(client, buf, sizeof(buf))) > 0) {
+            body.append(buf, read);
+            if (body.size() > 16384) {
+                break;
+            }
+        }
+    }
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+    if (body.empty()) {
+        return false;
+    }
+
+    std::vector<std::pair<int, std::string>> parsed;
+    size_t pos = 0;
+    while (pos < body.size()) {
+        size_t end = body.find('\n', pos);
+        if (end == std::string::npos) {
+            end = body.size();
+        }
+        std::string line = body.substr(pos, end - pos);
+        pos = end + 1;
+        if (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+        }
+        int minutes = 0;
+        double seconds = 0.0;
+        if (sscanf(line.c_str(), "[%d:%lf]", &minutes, &seconds) == 2) {
+            size_t close = line.find(']');
+            std::string text = (close == std::string::npos) ? std::string() : line.substr(close + 1);
+            parsed.emplace_back(static_cast<int>(minutes * 60000 + seconds * 1000), text);
+        }
+    }
+    std::lock_guard<std::mutex> lock(cover_mutex_);
+    lyrics_ = std::move(parsed);
+    ESP_LOGI(TAG, "lyrics index=%d lines=%d", index, static_cast<int>(lyrics_.size()));
+    return !lyrics_.empty();
+}
+
+std::string FoxyMusic::LyricAt(int elapsed_ms) const {
+    std::lock_guard<std::mutex> lock(cover_mutex_);
+    std::string current;
+    for (const auto& entry : lyrics_) {
+        if (entry.first > elapsed_ms) {
+            break;
+        }
+        current = entry.second;
+    }
+    return current;
+}
+
 

@@ -25,6 +25,9 @@ public:
     void PushMessage(const std::string& text);
     // 服务器远程控制音乐（play/pause/next/prev/stop/refresh）
     void HandleMusicCommand(const std::string& action, int index);
+    // 对话字幕（板级 SetChatMessage 转发进来）
+    void SetChatText(const std::string& text);
+    void SetChatStatus(const std::string& status);
 
 private:
     void BuildHome();
@@ -35,7 +38,19 @@ private:
     void BuildTouchTest();
     void BuildCalculator();
     void BuildMusic();
+    void BuildChat();
+    void BuildKeyboard();
+    bool HandleKeyboardTap(int x, int y);
+    void KeyboardKey(int code);
+    void KeyboardSend();
+    void UpdateKeyboardText();
+
     void UpdateMusicPage();
+    void UpdateMusicProgress();
+    void ToggleLyrics();
+    void UpdateLyrics();
+    void LoadMusicAssets(int index);
+    static void MusicAssetTask(void* arg);
     bool HandleMusicTap(int x, int y);
     static void MusicRefreshTask(void* arg);
     void UpdateTouchTest(int x, int y);
@@ -48,12 +63,16 @@ private:
     void ChangeVolumeBy(int delta);
     void ChangeBrightnessBy(int delta);
     bool HandleSettingsTap(int x, int y);
+    void GoBack();
+    void Ripple(int x, int y);
+    void Flash(lv_obj_t* obj);
     static void ClockTimerCb(lv_timer_t* timer);
 
     CoreS3LcdDisplay* display_ = nullptr;
     // 全屏深色底板：滑页动画时页面挪开的那半边显示它，而不是露出底下的对话界面
     lv_obj_t* backdrop_ = nullptr;
     lv_obj_t* home_ = nullptr;
+    lv_obj_t* art_ = nullptr;
     lv_obj_t* apps_ = nullptr;
     lv_obj_t* settings_ = nullptr;
     // 二级页：应用列表（音乐/小说/闹钟/相机）、工具列表、触摸测试
@@ -65,11 +84,39 @@ private:
     lv_obj_t* calc_ = nullptr;
     lv_obj_t* calc_label_ = nullptr;
     // 音乐页
+    lv_obj_t* chat_ = nullptr;
+    lv_obj_t* chat_art_ = nullptr;
+    lv_obj_t* chat_text_ = nullptr;
+    lv_obj_t* chat_status_ = nullptr;
     lv_obj_t* music_ = nullptr;
     lv_obj_t* music_status_ = nullptr;
     lv_obj_t* music_rows_[4] = {nullptr, nullptr, nullptr, nullptr};
     lv_obj_t* music_play_ = nullptr;
+    lv_obj_t* music_cover_ = nullptr;
+    lv_obj_t* music_panel_ = nullptr;
+    lv_obj_t* music_title_ = nullptr;
+    lv_obj_t* music_time_ = nullptr;
+    lv_obj_t* music_track_ = nullptr;
+    lv_obj_t* music_fill_ = nullptr;
+    lv_obj_t* music_knob_ = nullptr;
+    lv_obj_t* music_btn_prev_ = nullptr;
+    lv_obj_t* music_btn_next_ = nullptr;
+    lv_obj_t* lyrics_panel_ = nullptr;
+    lv_obj_t* lyric_labels_[5] = {};
+    bool lyrics_visible_ = false;
+    int cover_index_ = -1;
+
+    lv_obj_t* kbd_ = nullptr;
+    lv_obj_t* kbd_panel_ = nullptr;
+    lv_obj_t* kbd_text_label_ = nullptr;
+    lv_obj_t* kbd_keys_[48] = {};
+    int kbd_codes_[48] = {};
+    int kbd_key_count_ = 0;
+    std::string kbd_text_;
+    bool kbd_shift_ = false;
+    bool kbd_symbols_ = false;
     lv_obj_t* back_music_ = nullptr;
+    lv_obj_t* calc_keys_[16] = {nullptr};
     std::string calc_input_;
     double calc_acc_ = 0;
     char calc_op_ = 0;  // '+', '-', '*', '/'，0 表示没有待计算的操作
@@ -97,6 +144,7 @@ private:
     int press_x_ = 0;
     int press_y_ = 0;
     bool pressed_ = false;
+    bool consume_press_ = false;
     int drag_ = 0;  // 0 无，1 音量滑条，2 亮度滑条
     lv_obj_t* vol_track_ = nullptr;
     lv_obj_t* vol_knob_ = nullptr;
@@ -108,3 +156,7 @@ private:
     int volume_ = 0;
     int brightness_ = 100;
 };
+
+
+
+

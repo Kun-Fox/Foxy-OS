@@ -1231,6 +1231,9 @@ idf_component_register(SRCS ${SOURCES}
                         ${MAIN_PRIV_REQUIRES_EXTRA}
                     )
 
+target_add_binary_data(${COMPONENT_LIB} "foxy_home.bin" BINARY)
+target_add_binary_data(${COMPONENT_LIB} "foxy_chat.bin" BINARY)
+
 # Keep project-owned C++ on GNU C++23. ESP-IDF 6 may default to a newer
 # dialect; pin the baseline so main/ does not depend on it.
 if(NOT CMAKE_BUILD_EARLY_EXPANSION)
@@ -1590,3 +1593,5 @@ if ("${size}" AND "${offset}")
 else()
     message(STATUS "Assets partition not found, using v1 partition table")
 endif()
+
+

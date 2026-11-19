@@ -110,6 +110,21 @@ void Protocol::SendStopListening() {
     SendText(message);
 }
 
+void Protocol::SendTypedText(const std::string& text) {
+    // 只需要转义引号和反斜杠，屏上键盘打不出控制字符
+    std::string escaped;
+    escaped.reserve(text.size() + 8);
+    for (char c : text) {
+        if (c == '"' || c == '\\') {
+            escaped.push_back('\\');
+        }
+        escaped.push_back(c);
+    }
+    std::string message = "{\"session_id\":\"" + session_id_ + "\",\"type\":\"listen\"";
+    message += ",\"state\":\"detect\",\"text\":\"" + escaped + "\"}";
+    SendText(message);
+}
+
 void Protocol::SendMcpMessage(const std::string& payload) {
     std::string message =
         "{\"session_id\":\"" + session_id_ + "\",\"type\":\"mcp\",\"payload\":" + payload + "}";

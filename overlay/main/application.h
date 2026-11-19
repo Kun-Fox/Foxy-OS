@@ -99,6 +99,9 @@ public:
      */
     void ToggleChatState();
 
+    // 屏幕键盘：把一段文字当成一次输入发给服务器（服务器会走正常的对话流程）
+    bool SendTypedText(const std::string& text);
+
     /**
      * Start listening (event-based, thread-safe)
      * Sends MAIN_EVENT_START_LISTENING to be handled in Run()

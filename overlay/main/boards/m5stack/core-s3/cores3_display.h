@@ -17,10 +17,15 @@ public:
 
     // 显示/隐藏基类的对话层（状态栏、表情、字幕），四页切换时用
     void SetChatVisible(bool visible);
+    void SetChatMessage(const char* role, const char* content) override;
 
     // 服务器推送的消息卡
     void ShowMessageCard(const std::string& text) override;
     void OnMusicCommand(const std::string& action, int index) override;
+
+    // 开发期截屏：把当前画面以 RGB565 原样 POST 到 url
+    void UploadSnapshot(const std::string& url) override;
+    void SetUiPage(int page) override;
 
     // 按下时记录起点（供分页滑动判定）
     void TouchPress(int x, int y);
@@ -51,3 +56,5 @@ private:
 };
 
 #endif  // CORES3_DISPLAY_H
+
+

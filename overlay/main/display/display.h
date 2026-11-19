@@ -51,6 +51,10 @@ public:
     virtual void SetChatMessage(const char* role, const char* content);
     // Foxy: 首页消息卡（板级可覆盖）
     virtual void ShowMessageCard(const std::string& text) { (void)text; }
+    // 开发期截屏：把当前画面编码成 JPEG/RGB565 上传到 url（设备实现可选）
+    virtual void UploadSnapshot(const std::string& url) { (void)url; }
+    // 开发期/远程切页：0=首页 1=应用 2=设置 3=对话 4=应用列表 5=工具列表 6=触摸测试 7=计算器 8=音乐
+    virtual void SetUiPage(int page) { (void)page; }
     // Remove a matching message without clearing newer content, when supported.
     virtual void RemoveChatMessage(const char* role, const char* content) {}
     virtual void ClearChatMessages();

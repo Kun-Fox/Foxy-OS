@@ -23,8 +23,11 @@ $files = @(
     'main/audio/audio_codec.cc',
     'main/application.cc',
     'main/application.h',
+    'main/protocols/protocol.h',
     'main/protocols/protocol.cc',
-    'main/CMakeLists.txt'
+    'main/CMakeLists.txt',
+    'main/foxy_home.bin',
+    'main/foxy_chat.bin'
 )
 
 foreach ($f in $files) {
@@ -45,3 +48,4 @@ try {
 } finally {
     Pop-Location
 }
+

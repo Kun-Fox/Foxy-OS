@@ -1,8 +1,8 @@
 diff --git a/main/CMakeLists.txt b/main/CMakeLists.txt
-index 45204d6..2fe9882 100644
+index 45204d6..01b9b3a 100644
 --- a/main/CMakeLists.txt
 +++ b/main/CMakeLists.txt
-@@ -1226,6 +1226,8 @@ idf_component_register(SRCS ${SOURCES}
+@@ -1226,9 +1226,14 @@ idf_component_register(SRCS ${SOURCES}
                          bt
                          fatfs
                          xiaozhi-fonts
@@ -11,8 +11,20 @@ index 45204d6..2fe9882 100644
                          ${MAIN_PRIV_REQUIRES_EXTRA}
                      )
  
++target_add_binary_data(${COMPONENT_LIB} "foxy_home.bin" BINARY)
++target_add_binary_data(${COMPONENT_LIB} "foxy_chat.bin" BINARY)
++
+ # Keep project-owned C++ on GNU C++23. ESP-IDF 6 may default to a newer
+ # dialect; pin the baseline so main/ does not depend on it.
+ if(NOT CMAKE_BUILD_EARLY_EXPANSION)
+@@ -1588,3 +1593,5 @@ if ("${size}" AND "${offset}")
+ else()
+     message(STATUS "Assets partition not found, using v1 partition table")
+ endif()
++
++
 diff --git a/main/application.cc b/main/application.cc
-index 300a36c..6de2309 100644
+index 300a36c..52b393a 100644
 --- a/main/application.cc
 +++ b/main/application.cc
 @@ -22,6 +22,10 @@
@@ -122,7 +134,7 @@ index 300a36c..6de2309 100644
                          }
                      }
                  });
-@@ -713,6 +764,23 @@ void Application::InitializeProtocol() {
+@@ -713,6 +764,49 @@ void Application::InitializeProtocol() {
                      display->SetEmotion(emotion_str.c_str());
                  });
              }
@@ -133,6 +145,32 @@ index 300a36c..6de2309 100644
 +                Schedule([display, text = std::string(message->valuestring)]() {
 +                    display->ShowMessageCard(text);
 +                });
++            }
++            // Foxy: 截屏上传（开发期用，方便在电脑上看真实画面）
++            auto action = cJSON_GetObjectItem(root, "action");
++            if (cJSON_IsString(action) && strcmp(action->valuestring, "snapshot") == 0) {
++                auto url = cJSON_GetObjectItem(root, "url");
++                if (cJSON_IsString(url)) {
++                    Schedule([display, target = std::string(url->valuestring)]() {
++                        display->UploadSnapshot(target);
++                    });
++                }
++            }
++            // Foxy: 远程切页（开发期看各页真实渲染）
++            if (cJSON_IsString(action) && strcmp(action->valuestring, "page") == 0) {
++                auto page = cJSON_GetObjectItem(root, "page");
++                if (cJSON_IsNumber(page)) {
++                    int target_page = page->valueint;
++                    Schedule([display, target_page]() { display->SetUiPage(target_page); });
++                }
++            }
++            // Foxy: 调试用的"打字"通道——等同于用户在屏幕键盘上点发送
++            if (cJSON_IsString(action) && strcmp(action->valuestring, "type") == 0) {
++                auto typed = cJSON_GetObjectItem(root, "text");
++                if (cJSON_IsString(typed) && typed->valuestring[0] != '\0') {
++                    std::string payload = typed->valuestring;
++                    SendTypedText(payload);
++                }
 +            }
 +        } else if (strcmp(type->valuestring, "music") == 0) {
 +            // Foxy: 服务器远程控制音乐（网页/脚本点播）
@@ -146,7 +184,7 @@ index 300a36c..6de2309 100644
          } else if (strcmp(type->valuestring, "mcp") == 0) {
              auto payload = cJSON_GetObjectItem(root, "payload");
              if (cJSON_IsObject(payload)) {
-@@ -809,6 +877,33 @@ void Application::DismissAlert() {
+@@ -809,6 +903,48 @@ void Application::DismissAlert() {
      }
  }
  
@@ -177,10 +215,25 @@ index 300a36c..6de2309 100644
 +    }
 +}
 +
++bool Application::SendTypedText(const std::string& text) {
++    if (text.empty() || protocol_ == nullptr) {
++        return false;
++    }
++    if (!protocol_->IsAudioChannelOpened()) {
++        if (!protocol_->OpenAudioChannel()) {
++            ESP_LOGW(TAG, "typed text: channel not open");
++            return false;
++        }
++    }
++    protocol_->SendTypedText(text);
++    ESP_LOGI(TAG, "typed text sent: %s", text.c_str());
++    return true;
++}
++
  void Application::ToggleChatState() { xEventGroupSetBits(event_group_, MAIN_EVENT_TOGGLE_CHAT); }
  
  void Application::StartListening() { xEventGroupSetBits(event_group_, MAIN_EVENT_START_LISTENING); }
-@@ -1033,6 +1128,10 @@ void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
+@@ -1033,6 +1169,10 @@ void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
  void Application::HandleStateChangedEvent() {
      DeviceState new_state = state_machine_.GetState();
      clock_ticks_ = 0;
@@ -191,7 +244,7 @@ index 300a36c..6de2309 100644
      // Any state change invalidates a pending deferred listening start;
      // the Listening case below re-arms it when needed.
      pending_listening_start_ = false;
-@@ -1056,6 +1155,9 @@ void Application::HandleStateChangedEvent() {
+@@ -1056,6 +1196,9 @@ void Application::HandleStateChangedEvent() {
              }
              audio_service_.EnableVoiceProcessing(false);
              audio_service_.EnableWakeWordDetection(true);
@@ -201,7 +254,7 @@ index 300a36c..6de2309 100644
              break;
          case kDeviceStateConnecting:
              display->SetStatus(Lang::Strings::CONNECTING);
-@@ -1408,10 +1510,8 @@ bool Application::CanEnterSleepMode() {
+@@ -1408,10 +1551,8 @@ bool Application::CanEnterSleepMode() {
          return false;
      }
  
@@ -214,8 +267,13 @@ index 300a36c..6de2309 100644
      if (!audio_service_.IsIdle()) {
          return false;
      }
+@@ -1478,3 +1619,4 @@ void Application::ResetProtocol() {
+         protocol_.reset();
+     });
+ }
++
 diff --git a/main/application.h b/main/application.h
-index 866c2a7..f344ae1 100644
+index 866c2a7..36d74b7 100644
 --- a/main/application.h
 +++ b/main/application.h
 @@ -38,6 +38,7 @@
@@ -226,7 +284,17 @@ index 866c2a7..f344ae1 100644
  
  enum AecMode {
      kAecOff,
-@@ -112,6 +113,15 @@ public:
+@@ -98,6 +99,9 @@ public:
+      */
+     void ToggleChatState();
+ 
++    // 屏幕键盘：把一段文字当成一次输入发给服务器（服务器会走正常的对话流程）
++    bool SendTypedText(const std::string& text);
++
+     /**
+      * Start listening (event-based, thread-safe)
+      * Sends MAIN_EVENT_START_LISTENING to be handled in Run()
+@@ -112,6 +116,15 @@ public:
  
      void Reboot();
      void WakeWordInvoke(const std::string& wake_word);
@@ -242,7 +310,7 @@ index 866c2a7..f344ae1 100644
      bool UpgradeFirmware(const std::string& url, const std::string& version = "");
      bool CanEnterSleepMode();
      void SendMcpMessage(const std::string& payload);
-@@ -138,6 +148,7 @@ private:
+@@ -138,6 +151,7 @@ private:
      EventGroupHandle_t event_group_ = nullptr;
      esp_timer_handle_t clock_timer_handle_ = nullptr;
      esp_timer_handle_t startup_wake_word_hint_timer_ = nullptr;
@@ -267,10 +335,10 @@ index 03e2baa..b28ad6c 100644
  
 diff --git a/main/boards/m5stack/core-s3/cores3_display.cc b/main/boards/m5stack/core-s3/cores3_display.cc
 new file mode 100644
-index 0000000..7d5974c
+index 0000000..1cf9196
 --- /dev/null
 +++ b/main/boards/m5stack/core-s3/cores3_display.cc
-@@ -0,0 +1,339 @@
+@@ -0,0 +1,429 @@
 +#include "cores3_display.h"
 +
 +#include "application.h"
@@ -279,12 +347,14 @@ index 0000000..7d5974c
 +#include "board.h"
 +
 +#include <esp_log.h>
++#include <esp_http_client.h>
 +#include <esp_netif.h>
 +#include <esp_timer.h>
 +#include <freertos/FreeRTOS.h>
 +#include <freertos/task.h>
 +#include <lvgl.h>
 +#include <cstdio>
++#include <cstring>
 +
 +LV_FONT_DECLARE(BUILTIN_TEXT_FONT);
 +
@@ -342,6 +412,14 @@ index 0000000..7d5974c
 +    FoxyUI::Get().OnMove(x, y);
 +}
 +
++void CoreS3LcdDisplay::SetChatMessage(const char* role, const char* content) {
++    // 原生字幕照常更新（万一哪天要切回去），同时把我们自绘对话页上的字幕也改掉。
++    LcdDisplay::SetChatMessage(role, content);
++    if (content != nullptr) {
++        FoxyUI::Get().SetChatText(content);
++    }
++}
++
 +void CoreS3LcdDisplay::SetChatVisible(bool visible) {
 +    lv_obj_t* objs[3] = {status_bar_, container_, bottom_bar_};
 +    for (auto* obj : objs) {
@@ -363,6 +441,82 @@ index 0000000..7d5974c
 +
 +void CoreS3LcdDisplay::OnMusicCommand(const std::string& action, int index) {
 +    FoxyUI::Get().HandleMusicCommand(action, index);
++}
++
++namespace {
++
++struct SnapshotJob {
++    std::string url;
++    uint8_t* data = nullptr;
++    int width = 0;
++    int height = 0;
++    size_t size = 0;
++};
++
++void SnapshotTask(void* arg) {
++    auto* job = static_cast<SnapshotJob*>(arg);
++    esp_http_client_config_t cfg = {};
++    cfg.url = job->url.c_str();
++    cfg.method = HTTP_METHOD_POST;
++    cfg.timeout_ms = 15000;
++    auto client = esp_http_client_init(&cfg);
++    if (client != nullptr) {
++        char wbuf[8], hbuf[8];
++        snprintf(wbuf, sizeof(wbuf), "%d", job->width);
++        snprintf(hbuf, sizeof(hbuf), "%d", job->height);
++        esp_http_client_set_header(client, "Content-Type", "application/octet-stream");
++        esp_http_client_set_header(client, "X-Width", wbuf);
++        esp_http_client_set_header(client, "X-Height", hbuf);
++        esp_http_client_set_header(client, "X-Format", "rgb565");
++        esp_http_client_set_post_field(client, reinterpret_cast<const char*>(job->data),
++                                       static_cast<int>(job->size));
++        esp_err_t err = esp_http_client_perform(client);
++        int status = esp_http_client_get_status_code(client);
++        ESP_LOGI(TAG, "snapshot upload %s status=%d size=%u err=%s", job->url.c_str(), status,
++                 (unsigned)job->size, esp_err_to_name(err));
++        esp_http_client_cleanup(client);
++    }
++    free(job->data);
++    delete job;
++    vTaskDelete(nullptr);
++}
++
++}  // namespace
++
++void CoreS3LcdDisplay::SetUiPage(int page) {
++    DisplayLockGuard lock(this);
++    FoxyUI::Get().SetPage(page);
++}
++
++void CoreS3LcdDisplay::UploadSnapshot(const std::string& url) {
++    lv_draw_buf_t* snap = nullptr;
++    {
++        DisplayLockGuard lock(this);
++        snap = lv_snapshot_take(lv_screen_active(), LV_COLOR_FORMAT_RGB565);
++    }
++    if (snap == nullptr) {
++        ESP_LOGE(TAG, "snapshot failed");
++        return;
++    }
++    auto* job = new SnapshotJob();
++    job->url = url;
++    job->width = snap->header.w;
++    job->height = snap->header.h;
++    job->size = snap->data_size;
++    job->data = static_cast<uint8_t*>(malloc(job->size));
++    if (job->data == nullptr) {
++        lv_draw_buf_destroy(snap);
++        delete job;
++        ESP_LOGE(TAG, "snapshot alloc failed");
++        return;
++    }
++    memcpy(job->data, snap->data, job->size);
++    lv_draw_buf_destroy(snap);
++    if (xTaskCreate(SnapshotTask, "snapshot", 8192, job, 3, nullptr) != pdPASS) {
++        free(job->data);
++        delete job;
++        ESP_LOGE(TAG, "snapshot task failed");
++    }
 +}
 +
 +void CoreS3LcdDisplay::BuildControlBar() {
@@ -610,12 +764,16 @@ index 0000000..7d5974c
 +    }
 +    return false;
 +}
++
++
++
++
 diff --git a/main/boards/m5stack/core-s3/cores3_display.h b/main/boards/m5stack/core-s3/cores3_display.h
 new file mode 100644
-index 0000000..5863340
+index 0000000..0fc278c
 --- /dev/null
 +++ b/main/boards/m5stack/core-s3/cores3_display.h
-@@ -0,0 +1,53 @@
+@@ -0,0 +1,60 @@
 +#ifndef CORES3_DISPLAY_H
 +#define CORES3_DISPLAY_H
 +
@@ -635,10 +793,15 @@ index 0000000..5863340
 +
 +    // 显示/隐藏基类的对话层（状态栏、表情、字幕），四页切换时用
 +    void SetChatVisible(bool visible);
++    void SetChatMessage(const char* role, const char* content) override;
 +
 +    // 服务器推送的消息卡
 +    void ShowMessageCard(const std::string& text) override;
 +    void OnMusicCommand(const std::string& action, int index) override;
++
++    // 开发期截屏：把当前画面以 RGB565 原样 POST 到 url
++    void UploadSnapshot(const std::string& url) override;
++    void SetUiPage(int page) override;
 +
 +    // 按下时记录起点（供分页滑动判定）
 +    void TouchPress(int x, int y);
@@ -669,12 +832,14 @@ index 0000000..5863340
 +};
 +
 +#endif  // CORES3_DISPLAY_H
++
++
 diff --git a/main/boards/m5stack/core-s3/foxy_music.cc b/main/boards/m5stack/core-s3/foxy_music.cc
 new file mode 100644
-index 0000000..7836db3
+index 0000000..5c3d866
 --- /dev/null
 +++ b/main/boards/m5stack/core-s3/foxy_music.cc
-@@ -0,0 +1,408 @@
+@@ -0,0 +1,549 @@
 +#include "foxy_music.h"
 +
 +#include <cstdio>
@@ -889,13 +1054,12 @@ index 0000000..7836db3
 +    stop_ = false;
 +    paused_ = false;
 +    index_ = index;
-+    elapsed_seconds_ = 0;
++    elapsed_seconds_.store(seek_seconds_.load());
 +    playing_ = true;
 +
-+    // 播放期间不要跟语音抢喇叭和麦克风
-+    auto& app = Application::GetInstance();
-+    app.SetDeviceState(kDeviceStateIdle);
-+    app.GetAudioService().EnableVoiceProcessing(false);
++    // 播放期间不要跟语音抢喇叭和麦克风；但**不动设备状态**，
++    // 否则状态机会把已经建立的语音通道关掉，放歌就等于把会话踢下线。
++    Application::GetInstance().GetAudioService().EnableVoiceProcessing(false);
 +
 +    if (xTaskCreate(TaskEntry, "foxy_music", kTaskStack, this, 4, nullptr) != pdPASS) {
 +        ESP_LOGE(TAG, "task create failed");
@@ -937,6 +1101,10 @@ index 0000000..7836db3
 +    playing_ = false;
 +    paused_ = false;
 +    elapsed_seconds_ = 0;
++    if (codec_ != nullptr) {
++        codec_->EnableOutput(true);
++    }
++    Application::GetInstance().GetAudioService().EnableVoiceProcessing(true);
 +    ESP_LOGI(TAG, "stop");
 +}
 +
@@ -1056,7 +1224,12 @@ index 0000000..7836db3
 +                int16_t sample = static_cast<int16_t>(frame_buf[2 * i] | (frame_buf[2 * i + 1] << 8));
 +                pcm[i] = sample / 32768.0f;
 +            }
-+            resampler.Push(codec_, pcm.data(), frames, channels, rate, out, &elapsed_ms);
++            // seek：还没到目标位置就只解码不输出（解码比实时快，跳过很快）
++            AudioCodec* sink = (elapsed_ms < seek_seconds_ * 1000) ? nullptr : codec_;
++            resampler.Push(sink, pcm.data(), frames, channels, rate, out, &elapsed_ms);
++            if (sink == nullptr) {
++                out.clear();
++            }
 +            elapsed_seconds_ = elapsed_ms / 1000;
 +            if (paused_) {
 +                break;
@@ -1083,16 +1256,151 @@ index 0000000..7836db3
 +    ESP_LOGI(TAG, "task end index=%d eof=%d elapsed=%dms", index, eof ? 1 : 0, elapsed_ms);
 +}
 +
++
++int FoxyMusic::DurationMs() const {
++    return TrackDurationMs(CurrentIndex());
++}
++
++void FoxyMusic::SeekTo(int seconds) {
++    if (TrackCount() == 0) {
++        return;
++    }
++    if (seconds < 0) {
++        seconds = 0;
++    }
++    seek_seconds_ = seconds;
++    Play(CurrentIndex());
++}
++
++bool FoxyMusic::LoadCover(int index) {
++    char url[192];
++    snprintf(url, sizeof(url), "%s/debug/music/cover?index=%d&fmt=rgb565&w=320&h=240",
++             base_url_.c_str(), index);
++    std::vector<uint8_t> buffer(320 * 240 * 2);
++
++    esp_http_client_config_t cfg = {};
++    cfg.url = url;
++    cfg.timeout_ms = 15000;
++    cfg.buffer_size = 4096;
++    esp_http_client_handle_t client = esp_http_client_init(&cfg);
++    if (client == nullptr) {
++        return false;
++    }
++    int total = 0;
++    if (esp_http_client_open(client, 0) == ESP_OK) {
++        esp_http_client_fetch_headers(client);
++        while (total < static_cast<int>(buffer.size())) {
++            int read = esp_http_client_read(client, reinterpret_cast<char*>(buffer.data() + total),
++                                            buffer.size() - total);
++            if (read <= 0) {
++                break;
++            }
++            total += read;
++        }
++    }
++    esp_http_client_close(client);
++    esp_http_client_cleanup(client);
++
++    if (total != static_cast<int>(buffer.size())) {
++        ESP_LOGW(TAG, "cover index=%d got %d bytes (want %d)", index, total,
++                 static_cast<int>(buffer.size()));
++        return false;
++    }
++    std::lock_guard<std::mutex> lock(cover_mutex_);
++    cover_ = std::move(buffer);
++    ESP_LOGI(TAG, "cover index=%d ready", index);
++    return true;
++}
++
++const uint8_t* FoxyMusic::CoverData() const {
++    std::lock_guard<std::mutex> lock(cover_mutex_);
++    if (cover_.size() != 320u * 240u * 2u) {
++        return nullptr;
++    }
++    return cover_.data();
++}
++
++bool FoxyMusic::LoadLyrics(int index) {
++    char url[192];
++    snprintf(url, sizeof(url), "%s/debug/music/lyrics?index=%d", base_url_.c_str(), index);
++
++    esp_http_client_config_t cfg = {};
++    cfg.url = url;
++    cfg.timeout_ms = 8000;
++    cfg.buffer_size = 2048;
++    esp_http_client_handle_t client = esp_http_client_init(&cfg);
++    if (client == nullptr) {
++        return false;
++    }
++    std::string body;
++    if (esp_http_client_open(client, 0) == ESP_OK) {
++        esp_http_client_fetch_headers(client);
++        char buf[512];
++        int read = 0;
++        while ((read = esp_http_client_read(client, buf, sizeof(buf))) > 0) {
++            body.append(buf, read);
++            if (body.size() > 16384) {
++                break;
++            }
++        }
++    }
++    esp_http_client_close(client);
++    esp_http_client_cleanup(client);
++    if (body.empty()) {
++        return false;
++    }
++
++    std::vector<std::pair<int, std::string>> parsed;
++    size_t pos = 0;
++    while (pos < body.size()) {
++        size_t end = body.find('\n', pos);
++        if (end == std::string::npos) {
++            end = body.size();
++        }
++        std::string line = body.substr(pos, end - pos);
++        pos = end + 1;
++        if (!line.empty() && line.back() == '\r') {
++            line.pop_back();
++        }
++        int minutes = 0;
++        double seconds = 0.0;
++        if (sscanf(line.c_str(), "[%d:%lf]", &minutes, &seconds) == 2) {
++            size_t close = line.find(']');
++            std::string text = (close == std::string::npos) ? std::string() : line.substr(close + 1);
++            parsed.emplace_back(static_cast<int>(minutes * 60000 + seconds * 1000), text);
++        }
++    }
++    std::lock_guard<std::mutex> lock(cover_mutex_);
++    lyrics_ = std::move(parsed);
++    ESP_LOGI(TAG, "lyrics index=%d lines=%d", index, static_cast<int>(lyrics_.size()));
++    return !lyrics_.empty();
++}
++
++std::string FoxyMusic::LyricAt(int elapsed_ms) const {
++    std::lock_guard<std::mutex> lock(cover_mutex_);
++    std::string current;
++    for (const auto& entry : lyrics_) {
++        if (entry.first > elapsed_ms) {
++            break;
++        }
++        current = entry.second;
++    }
++    return current;
++}
++
++
 diff --git a/main/boards/m5stack/core-s3/foxy_music.h b/main/boards/m5stack/core-s3/foxy_music.h
 new file mode 100644
-index 0000000..d0bfe04
+index 0000000..554a746
 --- /dev/null
 +++ b/main/boards/m5stack/core-s3/foxy_music.h
-@@ -0,0 +1,61 @@
+@@ -0,0 +1,79 @@
 +#ifndef FOXY_MUSIC_H
 +#define FOXY_MUSIC_H
 +
 +#include <atomic>
++#include <cstdint>
++#include <utility>
 +#include <memory>
 +#include <string>
 +#include <vector>
@@ -1125,6 +1433,17 @@ index 0000000..d0bfe04
 +    int ElapsedSeconds() const;
 +    std::string StatusText() const;
 +
++    // 封面：服务端已经把它裁成 320x240 并转成 RGB565，设备只需要拉下来贴屏
++    bool LoadCover(int index);
++    const uint8_t* CoverData() const;
++
++    // 歌词：服务端返回同名 .lrc，按时间戳解析成 (毫秒, 文本)
++    bool LoadLyrics(int index);
++    std::string LyricAt(int elapsed_ms) const;
++
++    int DurationMs() const;
++    void SeekTo(int seconds);
++
 +private:
 +    FoxyMusic() = default;
 +    FoxyMusic(const FoxyMusic&) = delete;
@@ -1147,21 +1466,28 @@ index 0000000..d0bfe04
 +    std::atomic<bool> paused_{ false };
 +    std::atomic<bool> stop_{ false };
 +    std::atomic<int> elapsed_seconds_{ 0 };
++    std::atomic<int> seek_seconds_{ 0 };
++
++    mutable std::mutex cover_mutex_;
++    std::vector<uint8_t> cover_;
++    std::vector<std::pair<int, std::string>> lyrics_;
 +};
 +
 +#endif  // FOXY_MUSIC_H
 diff --git a/main/boards/m5stack/core-s3/foxy_ui.cc b/main/boards/m5stack/core-s3/foxy_ui.cc
 new file mode 100644
-index 0000000..e0a61bf
+index 0000000..cd0a274
 --- /dev/null
 +++ b/main/boards/m5stack/core-s3/foxy_ui.cc
-@@ -0,0 +1,1075 @@
+@@ -0,0 +1,1612 @@
 +#include "foxy_ui.h"
 +
 +#include "audio/audio_codec.h"
 +#include "board.h"
 +#include "cores3_display.h"
 +#include "foxy_music.h"
++
++#include "application.h"
 +
 +#include <esp_app_desc.h>
 +#include <esp_log.h>
@@ -1183,7 +1509,9 @@ index 0000000..e0a61bf
 +constexpr int kBarH = 42;
 +constexpr int kStatusH = 0;                          // 不再保留状态栏，四页铺满整屏
 +constexpr int kPageH = kScreenH - kStatusH;          // 240，无栏铺满整屏
-+constexpr int kSwipeThreshold = 60;
++constexpr int kSwipeThreshold = 80;
++// 小于这个位移算点击；介于它和滑动阈值之间算误触（交给滑条拖动）
++constexpr int kTapMaxMove = 18;
 +// 页面语义：0 首页，1 应用页，2 设置页，3 = 基类对话界面（不画我们的层）
 +constexpr int kPageHome = 0;
 +constexpr int kPageApps = 1;
@@ -1194,13 +1522,25 @@ index 0000000..e0a61bf
 +constexpr int kPageTouch = 6;     // 触摸测试
 +constexpr int kPageCalc = 7;      // 计算器
 +constexpr int kPageMusic = 8;     // 音乐
-+constexpr int kPageCount = 9;
++constexpr int kPageKeyboard = 9;  // 屏幕键盘
++constexpr int kPageCount = 10;
 +
 +// 二级列表页的网格参数（顶部留出返回键的位置）
 +constexpr int kListTop = 40;
 +constexpr int kListGap = 8;
 +constexpr int kListCellH = 60;
 +
++// Foxy 立绘：编译期用 target_add_binary_data 把 main/foxy_home.bin 嵌进固件，
++// 运行时只声明起止符号，不占 RAM（数据在 flash 的 .rodata 里）。
++extern "C" const uint8_t foxy_home_bin_start[] asm("_binary_foxy_home_bin_start");
++extern "C" const uint8_t foxy_chat_bin_start[] asm("_binary_foxy_chat_bin_start");
++static lv_image_dsc_t g_foxy_dsc;
++static lv_image_dsc_t g_cover_dsc;
++static lv_image_dsc_t g_chat_dsc;
++constexpr int kFoxyW = 132;
++constexpr int kFoxyH = 240;
++constexpr int kChatW = 66;
++constexpr int kChatH = 120;
 +constexpr uint32_t kBgDark = 0x14141A;
 +constexpr uint32_t kCardBg = 0x22222C;
 +constexpr uint32_t kAccent = 0xE8A33D;
@@ -1257,7 +1597,7 @@ index 0000000..e0a61bf
 +lv_obj_t* g_back = nullptr;
 +
 +lv_obj_t* MakeBackButton(lv_obj_t* parent) {
-+    lv_obj_t* btn = MakeButton(parent, 8, 6, 62, 26, "‹ 返回");
++    lv_obj_t* btn = MakeButton(parent, 8, 6, 62, 26, "返回");
 +    g_back = btn;
 +    return btn;
 +}
@@ -1337,6 +1677,9 @@ index 0000000..e0a61bf
 +    auto codec = Board::GetInstance().GetAudioCodec();
 +    if (codec != nullptr) {
 +        volume_ = codec->output_volume();
++        if (volume_ <= 10 && !codec->output_enabled()) {
++            volume_ = 0;
++        }
 +    }
 +    FoxyMusic::Get().Init(codec);
 +    DisplayLockGuard lock(display_);
@@ -1359,6 +1702,8 @@ index 0000000..e0a61bf
 +    touchtest_ = MakePage(lv_screen_active());
 +    calc_ = MakePage(lv_screen_active());
 +    music_ = MakePage(lv_screen_active());
++    kbd_ = MakePage(lv_screen_active());
++    chat_ = MakePage(lv_screen_active());
 +    BuildHome();
 +    BuildApps();
 +    BuildSettings();
@@ -1367,9 +1712,10 @@ index 0000000..e0a61bf
 +    BuildTouchTest();
 +    BuildCalculator();
 +    BuildMusic();
++    BuildKeyboard();
++    BuildChat();
 +    // 对话页的返回键挂在最顶层，原生对话界面也在这层，所以必须比它更新
-+    chat_back_ = MakeButton(lv_layer_top(), 4, 4, 62, 26, "‹ 首页");
-+    lv_obj_add_flag(chat_back_, LV_OBJ_FLAG_HIDDEN);
++    chat_back_ = nullptr;  // 对话页同样用滑动手势返回
 +    lv_obj_move_foreground(home_);
 +    lv_obj_move_foreground(apps_);
 +    lv_obj_move_foreground(settings_);
@@ -1396,62 +1742,35 @@ index 0000000..e0a61bf
 +}
 +
 +void FoxyUI::BuildHome() {
-+    // 左半边：像素 Foxy 身体（圆脸 + 身子 + 两条腿 + 尾巴）
-+    lv_obj_t* face = lv_obj_create(home_);
-+    lv_obj_set_size(face, 88, 88);
-+    lv_obj_set_pos(face, 22, 26);
-+    lv_obj_set_style_radius(face, LV_RADIUS_CIRCLE, 0);
-+    lv_obj_set_style_bg_color(face, lv_color_hex(kAccent), 0);
-+    lv_obj_set_style_bg_opa(face, LV_OPA_COVER, 0);
-+    lv_obj_set_style_border_width(face, 0, 0);
-+    lv_obj_clear_flag(face, LV_OBJ_FLAG_SCROLLABLE);
-+
-+    for (int i = 0; i < 2; i++) {
-+        lv_obj_t* eye = lv_obj_create(face);
-+        lv_obj_set_size(eye, 10, 16);
-+        lv_obj_set_pos(eye, 22 + i * 34, 30);
-+        lv_obj_set_style_bg_color(eye, lv_color_hex(0x1A1A1A), 0);
-+        lv_obj_set_style_bg_opa(eye, LV_OPA_COVER, 0);
-+        lv_obj_set_style_border_width(eye, 0, 0);
-+        lv_obj_set_style_radius(eye, 5, 0);
++    // 左半边：Foxy 立绘。132x240 的画布已经按首页底色做过透明合成，
++    // 所以这里用纯 RGB565 直接整张贴图，省掉 RGB565A8 的运行时混合。
++    if (g_foxy_dsc.data == nullptr) {
++        g_foxy_dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
++        g_foxy_dsc.header.w = kFoxyW;
++        g_foxy_dsc.header.h = kFoxyH;
++        g_foxy_dsc.header.cf = LV_COLOR_FORMAT_RGB565;
++        g_foxy_dsc.header.stride = kFoxyW * 2;
++        g_foxy_dsc.data_size = kFoxyW * kFoxyH * 2;
++        g_foxy_dsc.data = foxy_home_bin_start;
 +    }
-+    lv_obj_t* mouth = lv_obj_create(face);
-+    lv_obj_set_size(mouth, 16, 5);
-+    lv_obj_set_pos(mouth, 36, 60);
-+    lv_obj_set_style_bg_color(mouth, lv_color_hex(0x1A1A1A), 0);
-+    lv_obj_set_style_bg_opa(mouth, LV_OPA_COVER, 0);
-+    lv_obj_set_style_border_width(mouth, 0, 0);
-+    lv_obj_set_style_radius(mouth, 3, 0);
-+
-+    lv_obj_t* body = lv_obj_create(home_);
-+    lv_obj_set_size(body, 46, 42);
-+    lv_obj_set_pos(body, 43, 108);
-+    lv_obj_set_style_radius(body, 14, 0);
-+    lv_obj_set_style_bg_color(body, lv_color_hex(0xC98A2E), 0);
-+    lv_obj_set_style_bg_opa(body, LV_OPA_COVER, 0);
-+    lv_obj_set_style_border_width(body, 0, 0);
-+
-+    for (int i = 0; i < 2; i++) {
-+        lv_obj_t* leg = lv_obj_create(home_);
-+        lv_obj_set_size(leg, 12, 18);
-+        lv_obj_set_pos(leg, 50 + i * 24, 146);
-+        lv_obj_set_style_radius(leg, 5, 0);
-+        lv_obj_set_style_bg_color(leg, lv_color_hex(0xC98A2E), 0);
-+        lv_obj_set_style_bg_opa(leg, LV_OPA_COVER, 0);
-+        lv_obj_set_style_border_width(leg, 0, 0);
-+    }
-+
-+    lv_obj_t* tail = lv_obj_create(home_);
-+    lv_obj_set_size(tail, 26, 14);
-+    lv_obj_set_pos(tail, 8, 118);
-+    lv_obj_set_style_radius(tail, 7, 0);
-+    lv_obj_set_style_bg_color(tail, lv_color_hex(kAccent), 0);
-+    lv_obj_set_style_bg_opa(tail, LV_OPA_COVER, 0);
-+    lv_obj_set_style_border_width(tail, 0, 0);
-+
-+    lv_obj_t* name = MakeLabel(home_, "foxy", kAccent);
-+    lv_obj_set_pos(name, 36, 178);
-+
++    art_ = lv_image_create(home_);
++    lv_image_set_src(art_, &g_foxy_dsc);
++    lv_obj_set_pos(art_, 0, 0);
++    lv_obj_clear_flag(art_, LV_OBJ_FLAG_CLICKABLE);
++    // 呼吸感：整幅画上下浮动 3px，2.8 秒一个来回。
++    // 之后换成真正的多帧立绘时，这里就是帧动画的挂点。
++    lv_anim_t bob;
++    lv_anim_init(&bob);
++    lv_anim_set_var(&bob, art_);
++    lv_anim_set_values(&bob, 0, 3);
++    lv_anim_set_duration(&bob, 1400);
++    lv_anim_set_playback_duration(&bob, 1400);
++    lv_anim_set_repeat_count(&bob, LV_ANIM_REPEAT_INFINITE);
++    lv_anim_set_path_cb(&bob, lv_anim_path_ease_in_out);
++    lv_anim_set_exec_cb(&bob, [](void* var, int32_t v) {
++        lv_obj_set_y(static_cast<lv_obj_t*>(var), v);
++    });
++    lv_anim_start(&bob);
 +    clock_label_ = MakeLabel(home_, "--:--", 0xF2F2F5);
 +    lv_obj_set_pos(clock_label_, 150, 22);
 +
@@ -1482,7 +1801,7 @@ index 0000000..e0a61bf
 +
 +void FoxyUI::BuildSettings() {
 +    // 所有二级页统一：右上角返回键、左上角标题
-+    back_apps_ = MakeButton(settings_, 250, 6, 62, 26, "‹ 返回");
++    back_apps_ = nullptr;  // 返回键已取消：二级页统一用滑动返回
 +    lv_obj_t* title = MakeLabel(settings_, "设置", 0xF2F2F5);
 +    lv_obj_set_pos(title, 14, 12);
 +
@@ -1516,7 +1835,7 @@ index 0000000..e0a61bf
 +}
 +
 +void FoxyUI::BuildAppList() {
-+    back_applist_ = MakeButton(applist_, 250, 6, 62, 26, "‹ 返回");
++    back_applist_ = nullptr;  // 返回键已取消：二级页统一用滑动返回
 +    lv_obj_t* title = MakeLabel(applist_, "应用", 0xF2F2F5);
 +    lv_obj_set_pos(title, 14, 12);
 +
@@ -1532,7 +1851,7 @@ index 0000000..e0a61bf
 +}
 +
 +void FoxyUI::BuildToolList() {
-+    back_toollist_ = MakeButton(toollist_, 250, 6, 62, 26, "‹ 返回");
++    back_toollist_ = nullptr;  // 返回键已取消：二级页统一用滑动返回
 +    lv_obj_t* title = MakeLabel(toollist_, "工具", 0xF2F2F5);
 +    lv_obj_set_pos(title, 14, 12);
 +
@@ -1548,7 +1867,7 @@ index 0000000..e0a61bf
 +}
 +
 +void FoxyUI::BuildTouchTest() {
-+    back_touch_ = MakeButton(touchtest_, 250, 6, 62, 26, "‹ 返回");
++    back_touch_ = nullptr;  // 返回键已取消：二级页统一用滑动返回
 +    touch_label_ = MakeLabel(touchtest_, "触摸测试\n按下屏幕任意位置", 0xF2F2F5);
 +    lv_obj_set_pos(touch_label_, 14, 44);
 +    lv_obj_set_style_text_line_space(touch_label_, 8, 0);
@@ -1572,7 +1891,7 @@ index 0000000..e0a61bf
 +}
 +
 +void FoxyUI::BuildCalculator() {
-+    back_calc_ = MakeButton(calc_, 250, 6, 62, 26, "‹ 返回");
++    back_calc_ = nullptr;  // 返回键已取消：二级页统一用滑动返回
 +    lv_obj_t* title = MakeLabel(calc_, "计算器", 0xF2F2F5);
 +    lv_obj_set_pos(title, 14, 12);
 +
@@ -1594,79 +1913,287 @@ index 0000000..e0a61bf
 +    for (int i = 0; i < 16; i++) {
 +        int col = i % 4;
 +        int row = i / 4;
-+        MakeButton(calc_, kKeyLeft + col * (kKeyW + kKeyGap), kKeyTop + row * (kKeyH + kKeyGap), kKeyW,
-+                   kKeyH, keys[i]);
++        calc_keys_[i] = MakeButton(calc_, kKeyLeft + col * (kKeyW + kKeyGap),
++                                   kKeyTop + row * (kKeyH + kKeyGap), kKeyW, kKeyH, keys[i]);
 +    }
 +    UpdateCalcDisplay();
 +}
 +
-+void FoxyUI::BuildMusic() {
-+    back_music_ = MakeButton(music_, 250, 6, 62, 26, "‹ 返回");
-+    lv_obj_t* title = MakeLabel(music_, "音乐", 0xF2F2F5);
-+    lv_obj_set_pos(title, 14, 12);
-+    music_status_ = MakeLabel(music_, "未播放", kTextDim);
-+    lv_obj_set_pos(music_status_, 110, 12);
++void FoxyUI::BuildChat() {
++    chat_status_ = MakeLabel(chat_, "我在听", kTextDim);
++    lv_obj_set_pos(chat_status_, 14, 12);
 +
-+    // 曲目行：最多显示 4 首，点哪行播哪首
-+    for (int i = 0; i < 4; i++) {
-+        lv_obj_t* row = MakeCard(music_, 10, 42 + i * 40, 300, 34);
-+        lv_obj_set_style_radius(row, 8, 0);
-+        lv_obj_clear_flag(row, LV_OBJ_FLAG_CLICKABLE);
-+        music_rows_[i] = MakeLabel(row, "-", 0xF2F2F5);
-+        lv_obj_set_width(music_rows_[i], 280);
-+        lv_label_set_long_mode(music_rows_[i], LV_LABEL_LONG_CLIP);
-+        lv_obj_align(music_rows_[i], LV_ALIGN_LEFT_MID, 10, 0);
++    if (g_chat_dsc.data == nullptr) {
++        g_chat_dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
++        g_chat_dsc.header.w = kChatW;
++        g_chat_dsc.header.h = kChatH;
++        g_chat_dsc.header.cf = LV_COLOR_FORMAT_RGB565;
++        g_chat_dsc.header.stride = kChatW * 2;
++        g_chat_dsc.data_size = kChatW * kChatH * 2;
++        g_chat_dsc.data = foxy_chat_bin_start;
++    }
++    chat_art_ = lv_image_create(chat_);
++    lv_image_set_src(chat_art_, &g_chat_dsc);
++    lv_obj_set_pos(chat_art_, (kScreenW - kChatW) / 2, 8);
++    lv_obj_clear_flag(chat_art_, LV_OBJ_FLAG_CLICKABLE);
++
++    // 字幕：三行，居中，长文本自动换行
++    chat_text_ = MakeLabel(chat_, "按住屏幕说句话，或者从左下角打字喵", 0xF2F2F5);
++    lv_obj_set_width(chat_text_, 296);
++    lv_obj_set_pos(chat_text_, 12, 140);
++    lv_label_set_long_mode(chat_text_, LV_LABEL_LONG_WRAP);
++    lv_obj_set_style_text_align(chat_text_, LV_TEXT_ALIGN_CENTER, 0);
++    lv_obj_set_style_text_line_space(chat_text_, 4, 0);
++    lv_obj_set_style_text_color(chat_text_, lv_color_hex(0xF2F2F5), 0);
++}
++
++void FoxyUI::SetChatText(const std::string& text) {
++    if (display_ == nullptr || chat_text_ == nullptr) {
++        return;
++    }
++    DisplayLockGuard lock(display_);
++    std::string shown = text;
++    if (shown.size() > 120) {
++        shown = shown.substr(0, 120) + "…";
++    }
++    lv_label_set_text(chat_text_, shown.c_str());
++}
++
++void FoxyUI::SetChatStatus(const std::string& status) {
++    if (display_ == nullptr || chat_status_ == nullptr) {
++        return;
++    }
++    DisplayLockGuard lock(display_);
++    lv_label_set_text(chat_status_, status.c_str());
++}
++
++void FoxyUI::BuildMusic() {
++    back_music_ = nullptr;  // 返回键已取消：二级页统一用滑动返回
++
++    // 封面铺满整屏，控制条浮在底部
++    music_cover_ = lv_image_create(music_);
++    lv_obj_remove_style_all(music_cover_);
++    lv_obj_set_pos(music_cover_, 0, 0);
++    lv_obj_clear_flag(music_cover_, LV_OBJ_FLAG_CLICKABLE);
++    lv_obj_add_flag(music_cover_, LV_OBJ_FLAG_HIDDEN);
++
++    music_panel_ = lv_obj_create(music_);
++    lv_obj_remove_style_all(music_panel_);
++    lv_obj_set_pos(music_panel_, 0, 148);
++    lv_obj_set_size(music_panel_, kScreenW, kScreenH - 148);
++    lv_obj_set_style_bg_color(music_panel_, lv_color_hex(0x0B0B10), 0);
++    lv_obj_set_style_bg_opa(music_panel_, 208, 0);
++    lv_obj_clear_flag(music_panel_, LV_OBJ_FLAG_CLICKABLE);
++
++    music_title_ = MakeLabel(music_panel_, "-", 0xF2F2F5);
++    lv_obj_set_pos(music_title_, 14, 6);
++    lv_obj_set_width(music_title_, 210);
++    lv_label_set_long_mode(music_title_, LV_LABEL_LONG_CLIP);
++
++    music_time_ = MakeLabel(music_panel_, "0:00 / 0:00", kTextDim);
++    lv_obj_set_pos(music_time_, 196, 6);
++    lv_obj_set_width(music_time_, 110);
++    lv_obj_set_style_text_align(music_time_, LV_TEXT_ALIGN_RIGHT, 0);
++    lv_label_set_long_mode(music_time_, LV_LABEL_LONG_CLIP);
++
++    music_track_ = lv_obj_create(music_panel_);
++    lv_obj_remove_style_all(music_track_);
++    lv_obj_set_pos(music_track_, 14, 30);
++    lv_obj_set_size(music_track_, 292, 5);
++    lv_obj_set_style_bg_color(music_track_, lv_color_hex(0x33333F), 0);
++    lv_obj_set_style_bg_opa(music_track_, LV_OPA_COVER, 0);
++    lv_obj_set_style_radius(music_track_, 3, 0);
++    lv_obj_clear_flag(music_track_, LV_OBJ_FLAG_CLICKABLE);
++
++    music_fill_ = lv_obj_create(music_panel_);
++    lv_obj_remove_style_all(music_fill_);
++    lv_obj_set_pos(music_fill_, 14, 30);
++    lv_obj_set_size(music_fill_, 0, 5);
++    lv_obj_set_style_bg_color(music_fill_, lv_color_hex(0xE8A33D), 0);
++    lv_obj_set_style_bg_opa(music_fill_, LV_OPA_COVER, 0);
++    lv_obj_set_style_radius(music_fill_, 3, 0);
++    lv_obj_clear_flag(music_fill_, LV_OBJ_FLAG_CLICKABLE);
++
++    music_knob_ = lv_obj_create(music_panel_);
++    lv_obj_remove_style_all(music_knob_);
++    lv_obj_set_size(music_knob_, 12, 12);
++    lv_obj_set_style_bg_color(music_knob_, lv_color_hex(0xF2F2F5), 0);
++    lv_obj_set_style_bg_opa(music_knob_, LV_OPA_COVER, 0);
++    lv_obj_set_style_radius(music_knob_, LV_RADIUS_CIRCLE, 0);
++    lv_obj_set_pos(music_knob_, 8, 26);
++    lv_obj_clear_flag(music_knob_, LV_OBJ_FLAG_CLICKABLE);
++
++    // 三个圆形按钮：上一首 / 播放暂停 / 下一首
++    auto make_round = [this](int cx, const char* text) {
++        lv_obj_t* btn = lv_obj_create(music_panel_);
++        lv_obj_remove_style_all(btn);
++        lv_obj_set_size(btn, 46, 46);
++        lv_obj_set_pos(btn, cx, 44);
++        lv_obj_set_style_bg_color(btn, lv_color_hex(0x24242E), 0);
++        lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
++        lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0);
++        lv_obj_clear_flag(btn, LV_OBJ_FLAG_CLICKABLE);
++        lv_obj_t* label = MakeLabel(btn, text, 0xF2F2F5);
++        lv_obj_center(label);
++        return btn;
++    };
++    music_btn_prev_ = make_round(74, "上");
++    music_play_ = make_round(137, "播");
++    lv_obj_t* play_label = lv_obj_get_child(music_play_, 0);
++    if (play_label != nullptr) {
++        lv_label_set_text(play_label, "播");
++    }
++    music_btn_next_ = make_round(200, "下");
++
++    // 歌词浮层：盖住封面区域，点任意处返回封面
++    lyrics_panel_ = lv_obj_create(music_);
++    lv_obj_remove_style_all(lyrics_panel_);
++    lv_obj_set_pos(lyrics_panel_, 0, 0);
++    lv_obj_set_size(lyrics_panel_, kScreenW, 148);
++    lv_obj_set_style_bg_color(lyrics_panel_, lv_color_hex(0x101016), 0);
++    lv_obj_set_style_bg_opa(lyrics_panel_, LV_OPA_COVER, 0);
++    lv_obj_clear_flag(lyrics_panel_, LV_OBJ_FLAG_CLICKABLE);
++    lv_obj_add_flag(lyrics_panel_, LV_OBJ_FLAG_HIDDEN);
++    for (int i = 0; i < 5; i++) {
++        lyric_labels_[i] = MakeLabel(lyrics_panel_, "", kTextDim);
++        lv_obj_set_width(lyric_labels_[i], 292);
++        lv_obj_set_style_text_align(lyric_labels_[i], LV_TEXT_ALIGN_CENTER, 0);
++        lv_obj_set_pos(lyric_labels_[i], 14, 18 + i * 26);
++        lv_label_set_long_mode(lyric_labels_[i], LV_LABEL_LONG_CLIP);
 +    }
 +
-+    // 底部三个按钮：上一首 / 播放暂停 / 下一首
-+    MakeButton(music_, 10, 206, 92, 30, "上一首");
-+    music_play_ = MakeButton(music_, 114, 206, 92, 30, "播放");
-+    MakeButton(music_, 218, 206, 92, 30, "下一首");
 +    UpdateMusicPage();
++}
++
++void FoxyUI::ToggleLyrics() {
++    lyrics_visible_ = !lyrics_visible_;
++    if (lyrics_panel_ == nullptr) {
++        return;
++    }
++    if (lyrics_visible_) {
++        lv_obj_clear_flag(lyrics_panel_, LV_OBJ_FLAG_HIDDEN);
++        UpdateLyrics();
++    } else {
++        lv_obj_add_flag(lyrics_panel_, LV_OBJ_FLAG_HIDDEN);
++    }
++}
++
++void FoxyUI::UpdateLyrics() {
++    if (lyrics_panel_ == nullptr || !lyrics_visible_) {
++        return;
++    }
++    auto& music = FoxyMusic::Get();
++    int elapsed_ms = music.ElapsedSeconds() * 1000;
++    std::string current = music.LyricAt(elapsed_ms);
++    DisplayLockGuard lock(display_);
++    // 只显示"当前句"附近：当前句高亮，其它留空——比滚动歌词省心，也够看
++    for (int i = 0; i < 5; i++) {
++        if (lyric_labels_[i] == nullptr) {
++            continue;
++        }
++        if (i == 1) {
++            lv_label_set_text(lyric_labels_[i], current.c_str());
++            lv_obj_set_style_text_color(lyric_labels_[i], lv_color_hex(0xE8A33D), 0);
++        } else {
++            lv_label_set_text(lyric_labels_[i], "");
++        }
++    }
++}
++
++void FoxyUI::UpdateMusicProgress() {
++    if (music_track_ == nullptr || music_fill_ == nullptr || music_knob_ == nullptr) {
++        return;
++    }
++    auto& music = FoxyMusic::Get();
++    int duration_ms = music.DurationMs();
++    int elapsed_ms = music.ElapsedSeconds() * 1000;
++    if (duration_ms <= 0) {
++        duration_ms = 1;
++    }
++    int width = 292;
++    int filled = elapsed_ms * width / duration_ms;
++    if (filled < 0) {
++        filled = 0;
++    }
++    if (filled > width) {
++        filled = width;
++    }
++    DisplayLockGuard lock(display_);
++    lv_obj_set_width(music_fill_, filled);
++    lv_obj_set_pos(music_knob_, 14 + filled - 6, 26);
++}
++
++void FoxyUI::LoadMusicAssets(int index) {
++    if (index < 0) {
++        return;
++    }
++    FoxyMusic::Get().LoadLyrics(index);
++    if (music_cover_ == nullptr) {
++        return;
++    }
++    if (FoxyMusic::Get().LoadCover(index)) {
++        const uint8_t* data = FoxyMusic::Get().CoverData();
++        if (data != nullptr) {
++            g_cover_dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
++            g_cover_dsc.header.cf = LV_COLOR_FORMAT_RGB565;
++            g_cover_dsc.header.w = 320;
++            g_cover_dsc.header.h = 240;
++            g_cover_dsc.header.stride = 640;
++            g_cover_dsc.data_size = 320 * 240 * 2;
++            g_cover_dsc.data = data;
++            DisplayLockGuard lock(display_);
++            lv_image_set_src(music_cover_, &g_cover_dsc);
++            lv_obj_clear_flag(music_cover_, LV_OBJ_FLAG_HIDDEN);
++        }
++    }
++}
++
++void FoxyUI::MusicAssetTask(void* arg) {
++    int index = static_cast<int>(reinterpret_cast<intptr_t>(arg));
++    auto* ui = &FoxyUI::Get();
++    ui->LoadMusicAssets(index);
++    vTaskDelete(nullptr);
 +}
 +
 +void FoxyUI::UpdateMusicPage() {
 +    if (music_ == nullptr) {
 +        return;
 +    }
-+    DisplayLockGuard lock(display_);
 +    auto& music = FoxyMusic::Get();
-+    int count = music.TrackCount();
-+    for (int i = 0; i < 4; i++) {
-+        if (music_rows_[i] == nullptr) {
-+            continue;
++    char title[64];
++    int index = music.CurrentIndex();
++    std::string name = index >= 0 ? music.TrackName(index) : std::string();
++    if (name.size() > 4 && name.compare(name.size() - 4, 4, ".mp3") == 0) {
++        name = name.substr(0, name.size() - 4);
++    }
++    snprintf(title, sizeof(title), "%s", name.empty() ? "选一首歌" : name.c_str());
++
++    int duration = music.DurationMs();
++    int elapsed = music.ElapsedSeconds();
++    char time_text[32];
++    snprintf(time_text, sizeof(time_text), "%d:%02d / %d:%02d", elapsed / 60, elapsed % 60,
++             duration / 60000, (duration / 1000) % 60);
++
++    const char* play_text = music.IsPlaying() && !music.IsPaused() ? "停" : "播";
++
++    {
++        DisplayLockGuard lock(display_);
++        if (music_title_ != nullptr) {
++            lv_label_set_text(music_title_, title);
 +        }
-+        if (i < count) {
-+            char line[96];
-+            int seconds = music.TrackDurationMs(i) / 1000;
-+            if (i == music.CurrentIndex() && music.IsPlaying()) {
-+                snprintf(line, sizeof(line), "▶ %s", music.TrackName(i).c_str());
-+            } else if (seconds > 0) {
-+                snprintf(line, sizeof(line), "%d. %s  %d:%02d", i + 1, music.TrackName(i).c_str(),
-+                         seconds / 60, seconds % 60);
-+            } else {
-+                snprintf(line, sizeof(line), "%d. %s", i + 1, music.TrackName(i).c_str());
++        if (music_time_ != nullptr) {
++            lv_label_set_text(music_time_, time_text);
++        }
++        if (music_play_ != nullptr) {
++            lv_obj_t* label = lv_obj_get_child(music_play_, 0);
++            if (label != nullptr) {
++                lv_label_set_text(label, play_text);
 +            }
-+            lv_label_set_text(music_rows_[i], line);
-+        } else {
-+            lv_label_set_text(music_rows_[i], i == 0 ? "曲库为空：把 mp3 放进 cores3-server\\music" : "");
 +        }
 +    }
-+    if (music_play_ != nullptr) {
-+        lv_label_set_text(lv_obj_get_child(music_play_, 0),
-+                          music.IsPlaying() && !music.IsPaused() ? "暂停" : "播放");
-+    }
-+    if (music_status_ != nullptr) {
-+        if (count == 0) {
-+            lv_label_set_text(music_status_, "无曲目");
-+        } else if (music.IsPlaying()) {
-+            char status[48];
-+            snprintf(status, sizeof(status), "%s %d:%02d", music.StatusText().c_str(),
-+                     music.ElapsedSeconds() / 60, music.ElapsedSeconds() % 60);
-+            lv_label_set_text(music_status_, status);
-+        } else {
-+            lv_label_set_text(music_status_, "未播放");
-+        }
++    UpdateMusicProgress();
++    if (lyrics_visible_) {
++        UpdateLyrics();
 +    }
 +}
 +
@@ -1691,6 +2218,16 @@ index 0000000..e0a61bf
 +        music.Prev();
 +    } else if (action == "refresh") {
 +        music.Refresh();
++        if (page_ == kPageMusic) {
++            UpdateMusicPage();
++        }
++        return;
++    }
++
++    int current = music.CurrentIndex();
++    if (current >= 0 && page_ == kPageMusic) {
++        xTaskCreate(MusicAssetTask, "music_asset", 6144,
++                    reinterpret_cast<void*>(static_cast<intptr_t>(current)), 3, nullptr);
 +    }
 +    if (page_ == kPageMusic) {
 +        UpdateMusicPage();
@@ -1700,42 +2237,59 @@ index 0000000..e0a61bf
 +void FoxyUI::MusicRefreshTask(void* arg) {
 +    (void)arg;
 +    FoxyMusic::Get().Refresh();
-+    if (FoxyUI::Get().page() == kPageMusic) {
-+        FoxyUI::Get().UpdateMusicPage();
-+    }
++    FoxyUI::Get().LoadMusicAssets(FoxyMusic::Get().CurrentIndex() >= 0
++                                      ? FoxyMusic::Get().CurrentIndex()
++                                      : 0);
 +    vTaskDelete(nullptr);
 +}
 +
 +bool FoxyUI::HandleMusicTap(int x, int y) {
-+    if (HitTest(back_music_, x, y)) {
-+        FoxyMusic::Get().Stop();
-+        SetPage(kPageAppList);
++    auto& music = FoxyMusic::Get();
++
++    if (lyrics_visible_) {
++        ToggleLyrics();
 +        return true;
 +    }
-+    auto& music = FoxyMusic::Get();
-+    if (y >= 42 && y < 42 + 4 * 40) {
-+        int index = (y - 42) / 40;
-+        if (index >= 0 && index < music.TrackCount()) {
-+            if (index == music.CurrentIndex() && music.IsPlaying()) {
-+                music.TogglePause();
-+            } else {
-+                music.Play(index);
++
++    if (y < 148) {
++        // 点封面：切歌词
++        ToggleLyrics();
++        return true;
++    }
++
++    // 进度条区域：点哪跳哪
++    if (y >= 168 && y <= 190 && x >= 8 && x <= 312) {
++        int duration_ms = music.DurationMs();
++        if (duration_ms > 0) {
++            int ratio = (x - 14) * 1000 / 292;
++            if (ratio < 0) {
++                ratio = 0;
 +            }
++            if (ratio > 1000) {
++                ratio = 1000;
++            }
++            music.SeekTo(duration_ms * ratio / 1000 / 1000);
 +            UpdateMusicPage();
 +        }
 +        return true;
 +    }
-+    if (y >= 206) {
-+        if (x < 102) {
++
++    if (y >= 190) {
++        if (x >= 74 && x < 120) {
 +            music.Prev();
-+        } else if (x < 206) {
++        } else if (x >= 137 && x < 183) {
 +            if (music.IsPlaying()) {
 +                music.TogglePause();
 +            } else {
 +                music.Play(music.CurrentIndex() < 0 ? 0 : music.CurrentIndex());
 +            }
-+        } else {
++        } else if (x >= 200 && x < 246) {
 +            music.Next();
++        }
++        if (music.CurrentIndex() >= 0) {
++            xTaskCreate(MusicAssetTask, "music_asset", 6144,
++                        reinterpret_cast<void*>(static_cast<intptr_t>(music.CurrentIndex())), 3,
++                        nullptr);
 +        }
 +        UpdateMusicPage();
 +        return true;
@@ -1837,23 +2391,17 @@ index 0000000..e0a61bf
 +    // 关键：对话页之外，把基类的对话层（状态栏/表情/字幕）整个藏起来，
 +    // 不依赖堆叠顺序，避免出现“页面画了但被旧界面盖住”的情况。
 +    if (display_ != nullptr) {
-+        display_->SetChatVisible(page_ == kPageChat);
++        // 对话也由我们自己画：原生那层永远藏着，避免浅色界面漏出来
++        display_->SetChatVisible(false);
 +    }
-+    // 对话页要把底板藏起来，否则底板会盖住原生对话界面
-+    if (backdrop_ != nullptr) {
-+        if (page_ == kPageChat) {
-+            lv_obj_add_flag(backdrop_, LV_OBJ_FLAG_HIDDEN);
-+        } else {
-+            lv_obj_clear_flag(backdrop_, LV_OBJ_FLAG_HIDDEN);
-+        }
-+    }
-+    lv_obj_t* pages[] = {home_, apps_, settings_, applist_, toollist_, touchtest_, calc_, music_};
++
++    lv_obj_t* pages[] = {home_, apps_, settings_, applist_, toollist_, touchtest_, calc_, music_, chat_, kbd_};
 +    for (lv_obj_t* p : pages) {
 +        if (p != nullptr) {
 +            lv_obj_add_flag(p, LV_OBJ_FLAG_HIDDEN);
 +        }
 +    }
-+    if (chat_back_ != nullptr) {
++    if (false) {
 +        if (page_ == kPageChat) {
 +            lv_obj_clear_flag(chat_back_, LV_OBJ_FLAG_HIDDEN);
 +            lv_obj_move_foreground(chat_back_);
@@ -1902,8 +2450,15 @@ index 0000000..e0a61bf
 +            // 列表要从服务器拉，别卡住 UI 线程
 +            xTaskCreate(MusicRefreshTask, "music_list", 4096, nullptr, 3, nullptr);
 +            break;
++        case kPageKeyboard:
++            target = kbd_;
++            UpdateKeyboardText();
++            break;
++        case kPageChat:
++            target = chat_;
++            break;
 +        default:
-+            break;  // 对话页交给基类渲染
++            break;
 +    }
 +    if (target != nullptr) {
 +        lv_obj_clear_flag(target, LV_OBJ_FLAG_HIDDEN);
@@ -1925,10 +2480,104 @@ index 0000000..e0a61bf
 +    press_x_ = x;
 +    press_y_ = y;
 +    pressed_ = true;
++    consume_press_ = false;
++    Ripple(x, y);
 +    if (page_ == kPageTouch) {
 +        UpdateTouchTest(x, y);
 +    }
++    if (page_ == kPageCalc) {
++        // 计算器在按下时就出结果：手指一碰键帽，显示条立刻变，不用等抬起。
++        constexpr int kKeyW = 76;
++        constexpr int kKeyH = 38;
++        constexpr int kKeyGap = 3;
++        constexpr int kKeyLeft = 3;
++        constexpr int kKeyTop = 80;
++        int col = (x - kKeyLeft) / (kKeyW + kKeyGap);
++        int row = (y - kKeyTop) / (kKeyH + kKeyGap);
++        if (col >= 0 && col <= 3 && row >= 0 && row <= 3) {
++            int index = row * 4 + col;
++            Flash(calc_keys_[index]);
++            HandleCalcKey(index);
++            consume_press_ = true;
++        }
++    }
 +    return false;
++}
++
++void FoxyUI::GoBack() {
++    switch (page_) {
++        case kPageSettings:
++        case kPageAppList:
++        case kPageToolList:
++            SetPage(kPageApps);
++            break;
++        case kPageTouch:
++        case kPageCalc:
++            SetPage(kPageToolList);
++            break;
++        case kPageMusic:
++            SetPage(kPageAppList);
++            break;
++        case kPageChat:
++            SetPage(kPageHome);
++            break;
++        default:
++            break;
++    }
++}
++
++void FoxyUI::Ripple(int x, int y) {
++    if (display_ == nullptr) {
++        return;
++    }
++    DisplayLockGuard lock(display_);
++    lv_obj_t* dot = lv_obj_create(lv_layer_top());
++    lv_obj_remove_style_all(dot);
++    lv_obj_set_size(dot, 48, 48);
++    lv_obj_set_pos(dot, x - 24, y - 24);
++    lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
++    lv_obj_set_style_bg_color(dot, lv_color_hex(kAccent), 0);
++    lv_obj_set_style_bg_opa(dot, LV_OPA_30, 0);
++    lv_obj_clear_flag(dot, LV_OBJ_FLAG_CLICKABLE);
++    lv_obj_move_foreground(dot);
++
++    lv_anim_t fade;
++    lv_anim_init(&fade);
++    lv_anim_set_var(&fade, dot);
++    lv_anim_set_values(&fade, LV_OPA_30, LV_OPA_0);
++    lv_anim_set_duration(&fade, 220);
++    lv_anim_set_exec_cb(&fade, [](void* var, int32_t value) {
++        lv_obj_set_style_bg_opa(static_cast<lv_obj_t*>(var), static_cast<lv_opa_t>(value), 0);
++    });
++    lv_anim_set_ready_cb(&fade, [](lv_anim_t* anim) {
++        lv_obj_delete(static_cast<lv_obj_t*>(anim->var));
++    });
++    lv_anim_start(&fade);
++}
++
++struct FlashJob {
++    lv_obj_t* obj;
++    lv_color_t color;
++};
++
++void FoxyUI::Flash(lv_obj_t* obj) {
++    if (obj == nullptr) {
++        return;
++    }
++    auto* job = new FlashJob{obj, lv_obj_get_style_bg_color(obj, LV_PART_MAIN)};
++    lv_obj_set_style_bg_color(obj, lv_color_hex(0x555566), 0);
++    lv_timer_create(
++        [](lv_timer_t* timer) {
++            auto* j = static_cast<FlashJob*>(lv_timer_get_user_data(timer));
++            if (j != nullptr) {
++                if (lv_obj_is_valid(j->obj)) {
++                    lv_obj_set_style_bg_color(j->obj, j->color, 0);
++                }
++                delete j;
++            }
++            lv_timer_delete(timer);
++        },
++        130, job);
 +}
 +
 +bool FoxyUI::OnRelease(int x, int y, bool short_tap) {
@@ -1939,35 +2588,40 @@ index 0000000..e0a61bf
 +    drag_ = 0;
 +    int dx = x - press_x_;
 +    int dy = y - press_y_;
-+    bool horizontal = (dx > kSwipeThreshold && dx > dy * 2 && dx > -dy * 2) ||
-+                      (dx < -kSwipeThreshold && -dx > dy * 2 && -dx > -dy * 2);
-+    if (horizontal) {
-+        // 按方向区分：左滑 = 去下一页，右滑 = 回上一页。
++    int adx = dx < 0 ? -dx : dx;
++    int ady = dy < 0 ? -dy : dy;
++
++    // 滑动判定收紧：至少 80px、横向位移是纵向的两倍以上，才当翻页/返回。
++    // 这样"点一下"或者"轻轻蹭一下"都不会再整页滑走。
++    if (adx >= kSwipeThreshold && adx > ady * 2) {
 +        if (dx < 0) {
 +            if (page_ == kPageHome) {
 +                SetPage(kPageApps);
++            } else {
++                GoBack();
 +            }
-+        } else {
-+            if (page_ == kPageApps) {
-+                SetPage(kPageHome);
-+            } else if (page_ == kPageSettings || page_ == kPageAppList || page_ == kPageToolList) {
-+                SetPage(kPageApps);
-+            } else if (page_ == kPageChat) {
-+                SetPage(kPageHome);
-+            } else if (page_ == kPageTouch || page_ == kPageCalc) {
-+                SetPage(kPageToolList);
-+            } else if (page_ == kPageMusic) {
-+                SetPage(kPageAppList);
-+            }
++        } else if (page_ == kPageApps) {
++            SetPage(kPageHome);
++        } else if (page_ != kPageHome) {
++            GoBack();
 +        }
 +        return true;
++    }
++    if (page_ == kPageKeyboard) {
++        return HandleKeyboardTap(x, y);
++    }
++    if (consume_press_) {
++        return true;
++    }
++    // 位移不小但没到阈值：既不是点击也不是翻页，直接忽略，避免误触。
++    if (adx > kTapMaxMove || ady > kTapMaxMove) {
++        return page_ != kPageChat;
 +    }
 +    if (!short_tap) {
 +        return page_ != kPageChat;
 +    }
 +    if (page_ == kPageHome) {
-+        SetPage(kPageApps);
-+        return true;
++        return true;  // 首页只响应左滑，点击不翻页（避免误触）
 +    }
 +    if (page_ == kPageApps) {
 +        int col = (x - kGridMargin) / (kCellW + kGridGap);
@@ -2088,11 +2742,14 @@ index 0000000..e0a61bf
 +    if (track == nullptr || knob == nullptr) {
 +        return;
 +    }
++    lv_obj_update_layout(track);
++    lv_obj_update_layout(knob);
 +    lv_area_t area;
 +    lv_obj_get_coords(track, &area);
 +    int knob_w = lv_obj_get_width(knob);
 +    int width = (area.x2 - area.x1 + 1) - knob_w;
-+    lv_obj_set_x(knob, area.x1 + (value * width) / 100);
++    int clamped = value < 0 ? 0 : (value > 100 ? 100 : value);
++    lv_obj_set_x(knob, area.x1 + (clamped * width) / 100);
 +}
 +
 +void FoxyUI::SetVolume(int value) {
@@ -2231,12 +2888,216 @@ index 0000000..e0a61bf
 +        ui.UpdateMusicPage();
 +    }
 +}
++
++
++
++
++
++
++
++
++
++
++// ---------------- 屏幕键盘 ----------------
++namespace {
++constexpr int kKbdTop = 58;
++constexpr int kKbdKeyH = 32;
++constexpr int kKbdGap = 4;
++constexpr int kKbdMargin = 6;
++}  // namespace
++
++void FoxyUI::BuildKeyboard() {
++    kbd_panel_ = lv_obj_create(kbd_);
++    lv_obj_remove_style_all(kbd_panel_);
++    lv_obj_set_pos(kbd_panel_, 0, 0);
++    lv_obj_set_size(kbd_panel_, kScreenW, 56);
++    lv_obj_set_style_bg_color(kbd_panel_, lv_color_hex(0x1B1B24), 0);
++    lv_obj_set_style_bg_opa(kbd_panel_, LV_OPA_COVER, 0);
++    lv_obj_set_style_radius(kbd_panel_, 0, 0);
++    lv_obj_clear_flag(kbd_panel_, LV_OBJ_FLAG_CLICKABLE);
++
++    kbd_text_label_ = MakeLabel(kbd_panel_, "点字母开始输入", kTextDim);
++    lv_obj_set_pos(kbd_text_label_, 10, 8);
++    lv_obj_set_width(kbd_text_label_, 300);
++    lv_label_set_long_mode(kbd_text_label_, LV_LABEL_LONG_CLIP);
++
++    lv_obj_t* hint = MakeLabel(kbd_panel_, "右滑退出 · 发送后自动开聊", kTextDim);
++    lv_obj_set_pos(hint, 10, 32);
++
++    kbd_key_count_ = 0;
++    const char* rows_letters[] = {"1234567890", "qwertyuiop", "asdfghjkl"};
++    const char* rows_symbols[] = {"!@#$%^&*()", "-_=+[]{};:", "'\"/?,.\\|~"};
++    const char** rows = kbd_symbols_ ? rows_symbols : rows_letters;
++
++    for (int r = 0; r < 3; r++) {
++        const char* chars = rows[r];
++        int n = static_cast<int>(strlen(chars));
++        int width = (kScreenW - 2 * kKbdMargin - (n - 1) * kKbdGap) / n;
++        for (int i = 0; i < n; i++) {
++            int x = kKbdMargin + i * (width + kKbdGap);
++            int y = kKbdTop + r * (kKbdKeyH + kKbdGap);
++            lv_obj_t* key = MakeCard(kbd_, x, y, width, kKbdKeyH);
++            lv_obj_set_style_radius(key, 6, 0);
++            lv_obj_clear_flag(key, LV_OBJ_FLAG_CLICKABLE);
++            char label[2] = {chars[i], 0};
++            lv_obj_t* text = MakeLabel(key, label, 0xF2F2F5);
++            lv_obj_center(text);
++            kbd_keys_[kbd_key_count_] = key;
++            kbd_codes_[kbd_key_count_] = static_cast<int>(static_cast<unsigned char>(chars[i]));
++            kbd_key_count_++;
++        }
++    }
++
++    // 第四行：符号层切换 + zxcvbnm + 退格
++    {
++        const char* chars = "zxcvbnm";
++        int n = static_cast<int>(strlen(chars)) + 2;
++        int width = (kScreenW - 2 * kKbdMargin - (n - 1) * kKbdGap) / n;
++        int y = kKbdTop + 3 * (kKbdKeyH + kKbdGap);
++        auto add_key = [&](int slot, const char* label, int code, int w) {
++            int x = kKbdMargin + slot * (width + kKbdGap);
++            lv_obj_t* key = MakeCard(kbd_, x, y, w, kKbdKeyH);
++            lv_obj_set_style_radius(key, 6, 0);
++            lv_obj_clear_flag(key, LV_OBJ_FLAG_CLICKABLE);
++            lv_obj_t* text = MakeLabel(key, label, 0xF2F2F5);
++            lv_obj_center(text);
++            kbd_keys_[kbd_key_count_] = key;
++            kbd_codes_[kbd_key_count_] = code;
++            kbd_key_count_++;
++            return key;
++        };
++        add_key(0, kbd_symbols_ ? "abc" : "123", -5, width);
++        for (int i = 0; i < static_cast<int>(strlen(chars)); i++) {
++            char label[2] = {chars[i], 0};
++            add_key(1 + i, label, static_cast<int>(chars[i]), width);
++        }
++        // 退格单独占位（用整行剩余宽度）
++        int used = kKbdMargin + n * (width + kKbdGap) - kKbdGap;
++        int w = kScreenW - kKbdMargin - used;
++        if (w < width) {
++            w = width;
++        }
++        add_key(n - 1, "<-", -2, w);
++    }
++
++    // 第五行：空格 + 发送
++    {
++        int y = kKbdTop + 4 * (kKbdKeyH + kKbdGap);
++        int w_space = 200;
++        lv_obj_t* space = MakeCard(kbd_, kKbdMargin, y, w_space, kKbdKeyH);
++        lv_obj_set_style_radius(space, 6, 0);
++        lv_obj_clear_flag(space, LV_OBJ_FLAG_CLICKABLE);
++        lv_obj_t* space_text = MakeLabel(space, "空格", 0xF2F2F5);
++        lv_obj_center(space_text);
++        kbd_keys_[kbd_key_count_] = space;
++        kbd_codes_[kbd_key_count_] = -3;
++        kbd_key_count_++;
++
++        int x = kKbdMargin + w_space + kKbdGap;
++        int w = kScreenW - kKbdMargin - x;
++        lv_obj_t* send = MakeCard(kbd_, x, y, w, kKbdKeyH);
++        lv_obj_set_style_radius(send, 6, 0);
++        lv_obj_set_style_bg_color(send, lv_color_hex(0xE8A33D), 0);
++        lv_obj_clear_flag(send, LV_OBJ_FLAG_CLICKABLE);
++        lv_obj_t* send_text = MakeLabel(send, "发送", 0x14141A);
++        lv_obj_center(send_text);
++        kbd_keys_[kbd_key_count_] = send;
++        kbd_codes_[kbd_key_count_] = -4;
++        kbd_key_count_++;
++    }
++}
++
++bool FoxyUI::HandleKeyboardTap(int x, int y) {
++    for (int i = 0; i < kbd_key_count_; i++) {
++        lv_area_t area;
++        lv_obj_get_coords(kbd_keys_[i], &area);
++        if (x >= area.x1 && x <= area.x2 && y >= area.y1 && y <= area.y2) {
++            Flash(kbd_keys_[i]);
++            KeyboardKey(kbd_codes_[i]);
++            return true;
++        }
++    }
++    return true;
++}
++
++void FoxyUI::KeyboardKey(int code) {
++    if (code == -1) {
++        return;
++    }
++    if (code == -5) {
++        kbd_symbols_ = !kbd_symbols_;
++        bool shift = kbd_symbols_;
++        // 重建键盘：直接删掉旧键，重新铺一遍
++        for (int i = 0; i < kbd_key_count_; i++) {
++            if (kbd_keys_[i] != nullptr) {
++                lv_obj_delete(kbd_keys_[i]);
++                kbd_keys_[i] = nullptr;
++            }
++        }
++        kbd_key_count_ = 0;
++        kbd_symbols_ = shift;
++        BuildKeyboard();
++        return;
++    }
++    if (code == -2) {
++        if (!kbd_text_.empty()) {
++            kbd_text_.pop_back();
++        }
++        UpdateKeyboardText();
++        return;
++    }
++    if (code == -3) {
++        if (kbd_text_.size() < 60) {
++            kbd_text_.push_back(' ');
++        }
++        UpdateKeyboardText();
++        return;
++    }
++    if (code == -4) {
++        KeyboardSend();
++        return;
++    }
++    if (kbd_text_.size() < 60) {
++        kbd_text_.push_back(static_cast<char>(code));
++    }
++    UpdateKeyboardText();
++}
++
++void FoxyUI::UpdateKeyboardText() {
++    if (kbd_text_label_ == nullptr) {
++        return;
++    }
++    DisplayLockGuard lock(display_);
++    if (kbd_text_.empty()) {
++        lv_label_set_text(kbd_text_label_, "点字母开始输入");
++        lv_obj_set_style_text_color(kbd_text_label_, lv_color_hex(0x77778A), 0);
++    } else {
++        lv_label_set_text(kbd_text_label_, kbd_text_.c_str());
++        lv_obj_set_style_text_color(kbd_text_label_, lv_color_hex(0xF2F2F5), 0);
++    }
++}
++
++void FoxyUI::KeyboardSend() {
++    if (kbd_text_.empty()) {
++        return;
++    }
++    std::string text = kbd_text_;
++    kbd_text_.clear();
++    UpdateKeyboardText();
++    SetPage(kPageChat);
++    SetChatText(text);
++    SetChatStatus("发送中…");
++    Application::GetInstance().SendTypedText(text);
++}
++
++
++
 diff --git a/main/boards/m5stack/core-s3/foxy_ui.h b/main/boards/m5stack/core-s3/foxy_ui.h
 new file mode 100644
-index 0000000..af47693
+index 0000000..4f56d24
 --- /dev/null
 +++ b/main/boards/m5stack/core-s3/foxy_ui.h
-@@ -0,0 +1,110 @@
+@@ -0,0 +1,162 @@
 +#pragma once
 +
 +#include <lvgl.h>
@@ -2264,6 +3125,9 @@ index 0000000..af47693
 +    void PushMessage(const std::string& text);
 +    // 服务器远程控制音乐（play/pause/next/prev/stop/refresh）
 +    void HandleMusicCommand(const std::string& action, int index);
++    // 对话字幕（板级 SetChatMessage 转发进来）
++    void SetChatText(const std::string& text);
++    void SetChatStatus(const std::string& status);
 +
 +private:
 +    void BuildHome();
@@ -2274,7 +3138,19 @@ index 0000000..af47693
 +    void BuildTouchTest();
 +    void BuildCalculator();
 +    void BuildMusic();
++    void BuildChat();
++    void BuildKeyboard();
++    bool HandleKeyboardTap(int x, int y);
++    void KeyboardKey(int code);
++    void KeyboardSend();
++    void UpdateKeyboardText();
++
 +    void UpdateMusicPage();
++    void UpdateMusicProgress();
++    void ToggleLyrics();
++    void UpdateLyrics();
++    void LoadMusicAssets(int index);
++    static void MusicAssetTask(void* arg);
 +    bool HandleMusicTap(int x, int y);
 +    static void MusicRefreshTask(void* arg);
 +    void UpdateTouchTest(int x, int y);
@@ -2287,12 +3163,16 @@ index 0000000..af47693
 +    void ChangeVolumeBy(int delta);
 +    void ChangeBrightnessBy(int delta);
 +    bool HandleSettingsTap(int x, int y);
++    void GoBack();
++    void Ripple(int x, int y);
++    void Flash(lv_obj_t* obj);
 +    static void ClockTimerCb(lv_timer_t* timer);
 +
 +    CoreS3LcdDisplay* display_ = nullptr;
 +    // 全屏深色底板：滑页动画时页面挪开的那半边显示它，而不是露出底下的对话界面
 +    lv_obj_t* backdrop_ = nullptr;
 +    lv_obj_t* home_ = nullptr;
++    lv_obj_t* art_ = nullptr;
 +    lv_obj_t* apps_ = nullptr;
 +    lv_obj_t* settings_ = nullptr;
 +    // 二级页：应用列表（音乐/小说/闹钟/相机）、工具列表、触摸测试
@@ -2304,11 +3184,39 @@ index 0000000..af47693
 +    lv_obj_t* calc_ = nullptr;
 +    lv_obj_t* calc_label_ = nullptr;
 +    // 音乐页
++    lv_obj_t* chat_ = nullptr;
++    lv_obj_t* chat_art_ = nullptr;
++    lv_obj_t* chat_text_ = nullptr;
++    lv_obj_t* chat_status_ = nullptr;
 +    lv_obj_t* music_ = nullptr;
 +    lv_obj_t* music_status_ = nullptr;
 +    lv_obj_t* music_rows_[4] = {nullptr, nullptr, nullptr, nullptr};
 +    lv_obj_t* music_play_ = nullptr;
++    lv_obj_t* music_cover_ = nullptr;
++    lv_obj_t* music_panel_ = nullptr;
++    lv_obj_t* music_title_ = nullptr;
++    lv_obj_t* music_time_ = nullptr;
++    lv_obj_t* music_track_ = nullptr;
++    lv_obj_t* music_fill_ = nullptr;
++    lv_obj_t* music_knob_ = nullptr;
++    lv_obj_t* music_btn_prev_ = nullptr;
++    lv_obj_t* music_btn_next_ = nullptr;
++    lv_obj_t* lyrics_panel_ = nullptr;
++    lv_obj_t* lyric_labels_[5] = {};
++    bool lyrics_visible_ = false;
++    int cover_index_ = -1;
++
++    lv_obj_t* kbd_ = nullptr;
++    lv_obj_t* kbd_panel_ = nullptr;
++    lv_obj_t* kbd_text_label_ = nullptr;
++    lv_obj_t* kbd_keys_[48] = {};
++    int kbd_codes_[48] = {};
++    int kbd_key_count_ = 0;
++    std::string kbd_text_;
++    bool kbd_shift_ = false;
++    bool kbd_symbols_ = false;
 +    lv_obj_t* back_music_ = nullptr;
++    lv_obj_t* calc_keys_[16] = {nullptr};
 +    std::string calc_input_;
 +    double calc_acc_ = 0;
 +    char calc_op_ = 0;  // '+', '-', '*', '/'，0 表示没有待计算的操作
@@ -2336,6 +3244,7 @@ index 0000000..af47693
 +    int press_x_ = 0;
 +    int press_y_ = 0;
 +    bool pressed_ = false;
++    bool consume_press_ = false;
 +    int drag_ = 0;  // 0 无，1 音量滑条，2 亮度滑条
 +    lv_obj_t* vol_track_ = nullptr;
 +    lv_obj_t* vol_knob_ = nullptr;
@@ -2347,6 +3256,10 @@ index 0000000..af47693
 +    int volume_ = 0;
 +    int brightness_ = 100;
 +};
++
++
++
++
 diff --git a/main/boards/m5stack/core-s3/m5stack_core_s3.cc b/main/boards/m5stack/core-s3/m5stack_core_s3.cc
 index 83d1259..76a263e 100644
 --- a/main/boards/m5stack/core-s3/m5stack_core_s3.cc
@@ -2485,19 +3398,23 @@ index 83d1259..76a263e 100644
      }
  
 diff --git a/main/display/display.h b/main/display/display.h
-index c5b0c42..b7d063c 100644
+index c5b0c42..7dfa552 100644
 --- a/main/display/display.h
 +++ b/main/display/display.h
-@@ -49,6 +49,8 @@ public:
+@@ -49,6 +49,12 @@ public:
      // physical refresh has already completed. Callers are free to ignore the result.
      virtual bool SetEmotion(const char* emotion);
      virtual void SetChatMessage(const char* role, const char* content);
 +    // Foxy: 首页消息卡（板级可覆盖）
 +    virtual void ShowMessageCard(const std::string& text) { (void)text; }
++    // 开发期截屏：把当前画面编码成 JPEG/RGB565 上传到 url（设备实现可选）
++    virtual void UploadSnapshot(const std::string& url) { (void)url; }
++    // 开发期/远程切页：0=首页 1=应用 2=设置 3=对话 4=应用列表 5=工具列表 6=触摸测试 7=计算器 8=音乐
++    virtual void SetUiPage(int page) { (void)page; }
      // Remove a matching message without clearing newer content, when supported.
      virtual void RemoveChatMessage(const char* role, const char* content) {}
      virtual void ClearChatMessages();
-@@ -63,6 +65,11 @@ public:
+@@ -63,6 +69,11 @@ public:
      virtual bool IsMonochrome() const { return false; }
      virtual bool SupportsGuiOperations() const { return false; }
      virtual void SetHideSubtitle(bool hide) { (void)hide; }
@@ -2539,10 +3456,32 @@ index f150707..502f543 100644
              });
  
 diff --git a/main/protocols/protocol.cc b/main/protocols/protocol.cc
-index 7383081..a85a5b8 100644
+index 7383081..2bb7ffd 100644
 --- a/main/protocols/protocol.cc
 +++ b/main/protocols/protocol.cc
-@@ -117,7 +117,9 @@ void Protocol::SendMcpMessage(const std::string& payload) {
+@@ -110,6 +110,21 @@ void Protocol::SendStopListening() {
+     SendText(message);
+ }
+ 
++void Protocol::SendTypedText(const std::string& text) {
++    // 只需要转义引号和反斜杠，屏上键盘打不出控制字符
++    std::string escaped;
++    escaped.reserve(text.size() + 8);
++    for (char c : text) {
++        if (c == '"' || c == '\\') {
++            escaped.push_back('\\');
++        }
++        escaped.push_back(c);
++    }
++    std::string message = "{\"session_id\":\"" + session_id_ + "\",\"type\":\"listen\"";
++    message += ",\"state\":\"detect\",\"text\":\"" + escaped + "\"}";
++    SendText(message);
++}
++
+ void Protocol::SendMcpMessage(const std::string& payload) {
+     std::string message =
+         "{\"session_id\":\"" + session_id_ + "\",\"type\":\"mcp\",\"payload\":" + payload + "}";
+@@ -117,7 +132,9 @@ void Protocol::SendMcpMessage(const std::string& payload) {
  }
  
  bool Protocol::IsTimeout() const {
@@ -2553,3 +3492,29 @@ index 7383081..a85a5b8 100644
      auto now = std::chrono::steady_clock::now();
      auto duration = std::chrono::duration_cast<std::chrono::seconds>(now - last_incoming_time_);
      bool timeout = duration.count() > kTimeoutSeconds;
+diff --git a/main/protocols/protocol.h b/main/protocols/protocol.h
+index b14dbde..d796c82 100644
+--- a/main/protocols/protocol.h
++++ b/main/protocols/protocol.h
+@@ -71,6 +71,8 @@ public:
+     virtual void SendStopListening();
+     virtual void SendAbortSpeaking(AbortReason reason);
+     virtual void SendMcpMessage(const std::string& message);
++    // 屏幕键盘打字：发一条 listen/detect/text，服务器会当成一次文字输入
++    void SendTypedText(const std::string& text);
+ 
+ protected:
+     std::function<void(const cJSON* root)> on_incoming_json_;
+@@ -88,9 +90,12 @@ protected:
+     std::chrono::time_point<std::chrono::steady_clock> last_incoming_time_;
+ 
+     virtual bool SendText(const std::string& text) = 0;
++
++    // 屏幕键盘打字：发一条 listen/detect/text，服务器会当成一次文字输入
+     virtual void SetError(const std::string& message);
+     void SetError(const std::string& message, const std::string& detail);
+     virtual bool IsTimeout() const;
+ };
+ 
+ #endif  // PROTOCOL_H
++

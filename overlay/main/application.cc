@@ -772,6 +772,32 @@ void Application::InitializeProtocol() {
                     display->ShowMessageCard(text);
                 });
             }
+            // Foxy: 截屏上传（开发期用，方便在电脑上看真实画面）
+            auto action = cJSON_GetObjectItem(root, "action");
+            if (cJSON_IsString(action) && strcmp(action->valuestring, "snapshot") == 0) {
+                auto url = cJSON_GetObjectItem(root, "url");
+                if (cJSON_IsString(url)) {
+                    Schedule([display, target = std::string(url->valuestring)]() {
+                        display->UploadSnapshot(target);
+                    });
+                }
+            }
+            // Foxy: 远程切页（开发期看各页真实渲染）
+            if (cJSON_IsString(action) && strcmp(action->valuestring, "page") == 0) {
+                auto page = cJSON_GetObjectItem(root, "page");
+                if (cJSON_IsNumber(page)) {
+                    int target_page = page->valueint;
+                    Schedule([display, target_page]() { display->SetUiPage(target_page); });
+                }
+            }
+            // Foxy: 调试用的"打字"通道——等同于用户在屏幕键盘上点发送
+            if (cJSON_IsString(action) && strcmp(action->valuestring, "type") == 0) {
+                auto typed = cJSON_GetObjectItem(root, "text");
+                if (cJSON_IsString(typed) && typed->valuestring[0] != '\0') {
+                    std::string payload = typed->valuestring;
+                    SendTypedText(payload);
+                }
+            }
         } else if (strcmp(type->valuestring, "music") == 0) {
             // Foxy: 服务器远程控制音乐（网页/脚本点播）
             auto action = cJSON_GetObjectItem(root, "action");
@@ -902,6 +928,21 @@ void Application::CancelStandbyTimer() {
     if (standby_timer_handle_ != nullptr) {
         esp_timer_stop(standby_timer_handle_);
     }
+}
+
+bool Application::SendTypedText(const std::string& text) {
+    if (text.empty() || protocol_ == nullptr) {
+        return false;
+    }
+    if (!protocol_->IsAudioChannelOpened()) {
+        if (!protocol_->OpenAudioChannel()) {
+            ESP_LOGW(TAG, "typed text: channel not open");
+            return false;
+        }
+    }
+    protocol_->SendTypedText(text);
+    ESP_LOGI(TAG, "typed text sent: %s", text.c_str());
+    return true;
 }
 
 void Application::ToggleChatState() { xEventGroupSetBits(event_group_, MAIN_EVENT_TOGGLE_CHAT); }
@@ -1578,3 +1619,4 @@ void Application::ResetProtocol() {
         protocol_.reset();
     });
 }
+
