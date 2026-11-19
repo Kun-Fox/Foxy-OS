@@ -15,11 +15,17 @@ public:
 
     void SetupUI() override;
 
+    // 显示/隐藏基类的对话层（状态栏、表情、字幕），四页切换时用
+    void SetChatVisible(bool visible);
+
     // 服务器推送的消息卡
     void ShowMessageCard(const std::string& text) override;
 
     // 按下时记录起点（供分页滑动判定）
     void TouchPress(int x, int y);
+
+    // 按住拖动（供滑条）
+    void TouchMove(int x, int y);
 
     // 返回 true 表示这次触摸被界面元素消费掉了
     bool HandleTouch(int x, int y, bool short_tap = true);

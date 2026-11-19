@@ -48,7 +48,13 @@ static void FpsProbeTask(void* arg) {
 
 void CoreS3LcdDisplay::SetupUI() {
     SpiLcdDisplay::SetupUI();
-    BuildControlBar();
+    // 用户明确不要上下边栏：状态栏和底部信息栏都隐藏，四页铺满 320x240。
+    if (status_bar_ != nullptr) {
+        lv_obj_add_flag(status_bar_, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (bottom_bar_ != nullptr) {
+        lv_obj_add_flag(bottom_bar_, LV_OBJ_FLAG_HIDDEN);
+    }
     FoxyUI::Get().Init(this);
 #if FOXY_FPS_PROBE
     xTaskCreate(FpsProbeTask, "fps_probe", 16384, this, 2, nullptr);
@@ -57,6 +63,25 @@ void CoreS3LcdDisplay::SetupUI() {
 
 void CoreS3LcdDisplay::TouchPress(int x, int y) {
     FoxyUI::Get().OnPress(x, y);
+}
+
+void CoreS3LcdDisplay::TouchMove(int x, int y) {
+    FoxyUI::Get().OnMove(x, y);
+}
+
+void CoreS3LcdDisplay::SetChatVisible(bool visible) {
+    lv_obj_t* objs[3] = {status_bar_, container_, bottom_bar_};
+    for (auto* obj : objs) {
+        if (obj == nullptr) {
+            continue;
+        }
+        if (visible) {
+            lv_obj_clear_flag(obj, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_add_flag(obj, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+    ESP_LOGI(TAG, "chat layer %s", visible ? "shown" : "hidden");
 }
 
 void CoreS3LcdDisplay::ShowMessageCard(const std::string& text) {

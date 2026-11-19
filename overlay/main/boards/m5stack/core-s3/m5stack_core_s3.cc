@@ -238,6 +238,9 @@ private:
                 if (display_ != nullptr) {
                     display_->TouchPress(touch_point.x, touch_point.y);
                 }
+            } else if (display_ != nullptr) {
+                // 按住拖动：让设置页的音量/亮度滑条跟手
+                display_->TouchMove(touch_point.x, touch_point.y);
             }
         }
         // 检测触摸释放
