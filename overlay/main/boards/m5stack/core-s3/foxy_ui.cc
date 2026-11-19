@@ -698,13 +698,17 @@ void FoxyUI::UpdateMusicPage() {
     auto& music = FoxyMusic::Get();
     char title[64];
     int index = music.CurrentIndex();
+    // 还没点播时，先显示曲库第一首的名字/时长，页面上不至于只剩"选一首歌"
+    if (index < 0 && music.TrackCount() > 0) {
+        index = 0;
+    }
     std::string name = index >= 0 ? music.TrackName(index) : std::string();
     if (name.size() > 4 && name.compare(name.size() - 4, 4, ".mp3") == 0) {
         name = name.substr(0, name.size() - 4);
     }
     snprintf(title, sizeof(title), "%s", name.empty() ? "选一首歌" : name.c_str());
 
-    int duration = music.DurationMs();
+    int duration = (index >= 0 && !music.IsPlaying()) ? music.TrackDurationMs(index) : music.DurationMs();
     int elapsed = music.ElapsedSeconds();
     char time_text[32];
     snprintf(time_text, sizeof(time_text), "%d:%02d / %d:%02d", elapsed / 60, elapsed % 60,
@@ -1939,5 +1943,6 @@ void FoxyUI::AlarmFetch() {
     cJSON_Delete(root);
     SetAlarmText(lines);
 }
+
 
 
