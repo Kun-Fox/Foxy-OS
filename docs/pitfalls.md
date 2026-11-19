@@ -103,3 +103,10 @@
 ## 20. 串口工具一开就复位
 
 pyserial 打开 COM7 的瞬间会拉 DTR/RTS 复位板子。要么 `Serial()` 之后立刻 `setDTR(False)/setRTS(False)`（仍会复位一次），要么把命令延后 ~15 秒再发，否则会打到重启中的板上。
+
+## 21. 屏幕与 TF 卡共用 SPI，GPIO35 是双身份
+
+CoreS3 的 LCD：SCLK=G36、MOSI=G37、DC=G35、CS=G3；TF 卡：SCLK=G36、MOSI=G37、MISO=G35、CS=G4。
+**G35 同时是屏的 D/C 和卡的 MISO**，M5GFX 是靠"切片选时翻转引脚方向"绕过去的，ESP-IDF 的 sdspi 驱动默认把 MISO 当输入用，直接初始化会和屏抢引脚。
+本项目的取舍：音乐走电脑端 HTTP 流式播放（已验证可行，见 `foxy_music.cc`），暂不做 SD 本地播放；
+若以后要上 SD，优先走 Grove Port B（G8/G9）外接 SD 模块，或改用带独立 SPI 的扩展底座，避免动这块共享总线。
