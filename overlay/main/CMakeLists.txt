@@ -1563,7 +1563,12 @@ if ("${size}" AND "${offset}")
     # Flash assets based on configuration
     if(CONFIG_FLASH_DEFAULT_ASSETS)
         # Build default assets based on configuration
-        build_default_assets_bin()
+        
+# Foxy: 把 UI 字体打进 assets 分区（不占 app 分区）
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/assets/fonts")
+    list(APPEND DEFAULT_ASSETS_EXTRA_FILES "${CMAKE_CURRENT_SOURCE_DIR}/assets/fonts")
+endif()
+build_default_assets_bin()
         esptool_py_flash_to_partition(flash "assets" "${GENERATED_ASSETS_LOCAL_FILE}")
         message(STATUS "Generated default assets flash configured: ${GENERATED_ASSETS_LOCAL_FILE} -> assets partition")
     elseif(CONFIG_FLASH_CUSTOM_ASSETS)

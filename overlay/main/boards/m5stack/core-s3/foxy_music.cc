@@ -635,14 +635,14 @@ void FoxyMusic::SeekTo(int seconds) {
 bool FoxyMusic::LoadCover(int index) {
     {
         std::lock_guard<std::mutex> lock(cover_mutex_);
-        if (cover_index_ == index && cover_.size() == 320 * 240 * 2) {
+        if (cover_index_ == index && cover_.size() == 168 * 168 * 2) {
             return true;  // 同一首已经拉过封面，直接用，别再去占网络
         }
     }
     char url[192];
-    snprintf(url, sizeof(url), "%s/debug/music/cover?index=%d&fmt=rgb565&w=320&h=240",
+    snprintf(url, sizeof(url), "%s/debug/music/cover?index=%d&fmt=rgb565&w=168&h=168",
              base_url_.c_str(), index);
-    std::vector<uint8_t> buffer(320 * 240 * 2);
+    std::vector<uint8_t> buffer(168 * 168 * 2);
 
     esp_http_client_config_t cfg = {};
     cfg.url = url;
@@ -688,7 +688,7 @@ bool FoxyMusic::LoadCover(int index) {
 
 const uint8_t* FoxyMusic::CoverData() const {
     std::lock_guard<std::mutex> lock(cover_mutex_);
-    if (cover_.size() != 320u * 240u * 2u) {
+    if (cover_.size() != 168u * 168u * 2u) {
         return nullptr;
     }
     return cover_.data();

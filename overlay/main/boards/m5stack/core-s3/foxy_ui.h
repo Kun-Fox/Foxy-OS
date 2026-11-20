@@ -88,6 +88,13 @@ private:
     lv_obj_t* backdrop_ = nullptr;
     lv_obj_t* home_ = nullptr;
     lv_obj_t* art_ = nullptr;
+    // 来自 assets 分区的 binfont（POD2 字体，含中文）
+    const lv_font_t* font14_ = nullptr;
+    const lv_font_t* font16_ = nullptr;
+    const lv_font_t* font18_ = nullptr;
+    const lv_font_t* font22_ = nullptr;
+    void LoadFonts();
+    void ApplyPageFonts();
     lv_obj_t* apps_ = nullptr;
     lv_obj_t* settings_ = nullptr;
     // 二级页：应用列表（音乐/小说/闹钟/相机）、工具列表、触摸测试
