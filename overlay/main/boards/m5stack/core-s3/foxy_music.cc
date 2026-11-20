@@ -1,4 +1,5 @@
 #include "board.h"
+#include "cores3_audio_codec.h"
 #include <vector>
 #include <cmath>
 #include "foxy_music.h"
@@ -26,30 +27,65 @@ static const char* TAG = "FoxyMusic";
 namespace {
 
 constexpr int kOutputSampleRate = 24000;
-constexpr int kChunkSamples = 480;      // 20ms @24k
+constexpr int kChunkSamples = 2400;      // 20ms @24k
 constexpr int kReadBufferSize = 8192;
 constexpr int kTaskStack = 14336;
 
 // 线性插值到 24k 单声道，攒够 20ms 就推一次喇叭
 
+
+// 统一出口：24k 单声道块 -> 立体声交错 -> 直接写 I2S。
+// 之前走 codec->OutputData()（esp_codec_dev 那一层），喂多快就丢多快；
+// 改成阻塞写 i2s_channel_write 之后，队列满时它自己会等，天然就是实时节拍。
+static void WriteMonoToCodec(AudioCodec* codec, const std::vector<int16_t>& mono) {
+    if (codec == nullptr || mono.empty()) {
+        return;
+    }
+    auto* c3 = static_cast<CoreS3AudioCodec*>(codec);  // 板上只有这一种 codec，不需要 RTTI
+    if (c3 == nullptr) {
+        return;
+    }
+    static std::vector<int16_t> stereo;
+    stereo.resize(mono.size() * 2);
+    for (size_t i = 0; i < mono.size(); ++i) {
+        stereo[2 * i] = mono[i];
+        stereo[2 * i + 1] = mono[i];
+    }
+    const size_t kFramesPerWrite = 480;  // 20ms @24k，和 DMA 一格同量级
+    size_t sent = 0;
+    while (sent < mono.size()) {
+        size_t frames = mono.size() - sent;
+        if (frames > kFramesPerWrite) {
+            frames = kFramesPerWrite;
+        }
+        c3->WriteStereoFrames(stereo.data() + sent * 2, frames, 200);
+        sent += frames;
+    }
+}
+
 // 播放节拍器：I2S 的 DMA 队列很短，灌得比实时快就会丢帧，
 // 听感就是"滋滋"的电流声。这里按采样数算时间戳，写完就睡到下一个点。
+// 播放节拍器：I2S 的 DMA 队列很短，灌得比实时快就会丢帧，听感就是电流声；
+// 灌得比实时慢则会断流，听感是咔哒。这里把"已写入的音频时长"和墙上时间对齐，
+// 并刻意保持 ahead_us 的余量吸收调度抖动（本机 CONFIG_FREERTOS_HZ=100，tick 只有 10ms）。
 static void PaceAfter(AudioCodec* codec, size_t samples, int64_t* deadline_us) {
     if (codec == nullptr) {
         return;
     }
     *deadline_us += static_cast<int64_t>(samples) * 1000000LL / kOutputSampleRate;
-    int64_t now = esp_timer_get_time();
-    if (*deadline_us > now) {
-        int delay_ms = static_cast<int>((*deadline_us - now) / 1000);
-        if (delay_ms > 0) {
-            vTaskDelay(pdMS_TO_TICKS(delay_ms));
+    const int64_t ahead_us = 40000;  // 队列里领先 40ms，够抗 10ms tick 的抖动
+    while (true) {
+        int64_t now = esp_timer_get_time();
+        int64_t ahead = *deadline_us - now;
+        if (ahead <= ahead_us) {
+            break;
         }
-    } else if (now - *deadline_us > 300000) {
-        *deadline_us = now;  // 落后超过 300ms 就不再追，直接重新对齐
+        vTaskDelay(1);  // 1 tick = 10ms
+    }
+    if (esp_timer_get_time() - *deadline_us > 500000) {
+        *deadline_us = esp_timer_get_time();  // 落后半秒以上就不再追
     }
 }
-
 class Resampler {
 public:
     void Push(AudioCodec* codec, const float* src, size_t frames, int channels, int in_rate,
@@ -72,10 +108,7 @@ public:
                 pos_ -= 1.0;
                 out.push_back(static_cast<int16_t>(last_ * 32767.0f));
                 if (static_cast<int>(out.size()) >= kChunkSamples) {
-                    if (codec != nullptr) {
-                        codec->OutputData(out);
-                        PaceAfter(codec, out.size(), &deadline_us_);
-                    }
+                    WriteMonoToCodec(codec, out);
                     out.clear();
                     *elapsed_ms += kChunkSamples * 1000 / kOutputSampleRate;
                 }
@@ -332,17 +365,16 @@ static void ToneTask(void*) {
     if (codec->output_volume() <= 0) {
         codec->SetOutputVolume(60);
     }
-    std::vector<int16_t> blob(480);
-    const int total = 24000 * 2 / 480;
+    std::vector<int16_t> blob(2400);
+    const int total = 24000 * 2 / 2400;
     const double step = 2.0 * M_PI * 440.0 / 24000.0;
     int64_t deadline = esp_timer_get_time();
     ESP_LOGI("FoxyMusic", "tone start, volume=%d", codec->output_volume());
     for (int frame = 0; frame < total; frame++) {
         for (int i = 0; i < 480; i++) {
-            blob[i] = static_cast<int16_t>(8000 * sin(step * (frame * 480 + i)));
+            blob[i] = static_cast<int16_t>(8000 * sin(step * (frame * 2400 + i)));
         }
-        codec->OutputData(blob);
-        PaceAfter(codec, blob.size(), &deadline);
+        WriteMonoToCodec(codec, blob);
     }
     ESP_LOGI("FoxyMusic", "tone done");
     vTaskDelete(nullptr);
@@ -379,7 +411,7 @@ static void RawTestTask(void*) {
         return;
     }
     esp_http_client_fetch_headers(client);
-    std::vector<int16_t> chunk(480);
+    std::vector<int16_t> chunk(2400);
     int total = 0;
     int64_t deadline = esp_timer_get_time();
     while (true) {
@@ -390,9 +422,8 @@ static void RawTestTask(void*) {
         }
         int samples = got / 2;
         chunk.resize(samples);
-        codec->OutputData(chunk);
-        PaceAfter(codec, static_cast<size_t>(samples), &deadline);
-        chunk.resize(480);
+        WriteMonoToCodec(codec, chunk);
+        chunk.resize(2400);
         total += got;
     }
     ESP_LOGI("FoxyMusic", "raw test done, %d bytes", total);
@@ -680,6 +711,7 @@ std::string FoxyMusic::LyricAt(int elapsed_ms) const {
     }
     return current;
 }
+
 
 
 
