@@ -29,6 +29,8 @@ public:
     void Next();
     void Prev();
     void Stop();
+    void PlayTone();
+    void PlayRawTest();
 
     bool IsPlaying() const;
     bool IsPaused() const;
@@ -80,5 +82,6 @@ private:
     std::string status_;};
 
 #endif  // FOXY_MUSIC_H
+
 
 

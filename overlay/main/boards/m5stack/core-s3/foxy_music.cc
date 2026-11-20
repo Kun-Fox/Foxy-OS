@@ -1,3 +1,6 @@
+#include "board.h"
+#include <vector>
+#include <cmath>
 #include "foxy_music.h"
 
 #include <cstdio>
@@ -28,6 +31,25 @@ constexpr int kReadBufferSize = 8192;
 constexpr int kTaskStack = 14336;
 
 // 线性插值到 24k 单声道，攒够 20ms 就推一次喇叭
+
+// 播放节拍器：I2S 的 DMA 队列很短，灌得比实时快就会丢帧，
+// 听感就是"滋滋"的电流声。这里按采样数算时间戳，写完就睡到下一个点。
+static void PaceAfter(AudioCodec* codec, size_t samples, int64_t* deadline_us) {
+    if (codec == nullptr) {
+        return;
+    }
+    *deadline_us += static_cast<int64_t>(samples) * 1000000LL / kOutputSampleRate;
+    int64_t now = esp_timer_get_time();
+    if (*deadline_us > now) {
+        int delay_ms = static_cast<int>((*deadline_us - now) / 1000);
+        if (delay_ms > 0) {
+            vTaskDelay(pdMS_TO_TICKS(delay_ms));
+        }
+    } else if (now - *deadline_us > 300000) {
+        *deadline_us = now;  // 落后超过 300ms 就不再追，直接重新对齐
+    }
+}
+
 class Resampler {
 public:
     void Push(AudioCodec* codec, const float* src, size_t frames, int channels, int in_rate,
@@ -52,6 +74,7 @@ public:
                 if (static_cast<int>(out.size()) >= kChunkSamples) {
                     if (codec != nullptr) {
                         codec->OutputData(out);
+                        PaceAfter(codec, out.size(), &deadline_us_);
                     }
                     out.clear();
                     *elapsed_ms += kChunkSamples * 1000 / kOutputSampleRate;
@@ -65,6 +88,7 @@ private:
     int channels_ = 0;
     double pos_ = 0.0;
     float last_ = 0.0f;
+    int64_t deadline_us_ = 0;
 };
 
 }  // namespace
@@ -295,6 +319,90 @@ std::string FoxyMusic::StatusText() const {
         return "已暂停";
     }
     return "播放中";
+}
+
+
+// 试音：2 秒 440Hz 正弦，直接写 codec。用来把"扬声器/功放坏"和"音乐链路有问题"分开。
+static void ToneTask(void*) {
+    AudioCodec* codec = Board::GetInstance().GetAudioCodec();
+    if (codec == nullptr) {
+        return;
+    }
+    codec->EnableOutput(true);
+    if (codec->output_volume() <= 0) {
+        codec->SetOutputVolume(60);
+    }
+    std::vector<int16_t> blob(480);
+    const int total = 24000 * 2 / 480;
+    const double step = 2.0 * M_PI * 440.0 / 24000.0;
+    int64_t deadline = esp_timer_get_time();
+    ESP_LOGI("FoxyMusic", "tone start, volume=%d", codec->output_volume());
+    for (int frame = 0; frame < total; frame++) {
+        for (int i = 0; i < 480; i++) {
+            blob[i] = static_cast<int16_t>(8000 * sin(step * (frame * 480 + i)));
+        }
+        codec->OutputData(blob);
+        PaceAfter(codec, blob.size(), &deadline);
+    }
+    ESP_LOGI("FoxyMusic", "tone done");
+    vTaskDelete(nullptr);
+}
+
+void FoxyMusic::PlayTone() {
+    xTaskCreate(ToneTask, "tone", 4096, nullptr, 3, nullptr);
+}
+
+// 裸 PCM 直写：从服务器取 24k 单声道 16bit 正弦，不经过 mp3 解码、不重采样。
+// 用来判断问题出在"解码/重采样"，还是"写到 I2S 这一步"。
+static void RawTestTask(void*) {
+    AudioCodec* codec = Board::GetInstance().GetAudioCodec();
+    if (codec == nullptr) {
+        vTaskDelete(nullptr);
+        return;
+    }
+    codec->EnableOutput(true);
+    ESP_LOGI("FoxyMusic", "raw test: volume=%d", codec->output_volume());
+    const char* url = "http://192.168.3.10:8003/debug/music/raw?seconds=5";
+    esp_http_client_config_t cfg = {};
+    cfg.url = url;
+    cfg.timeout_ms = 4000;
+    cfg.buffer_size = 2048;
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    if (client == nullptr) {
+        vTaskDelete(nullptr);
+        return;
+    }
+    if (esp_http_client_open(client, 0) != ESP_OK) {
+        ESP_LOGE("FoxyMusic", "raw test: open failed");
+        esp_http_client_cleanup(client);
+        vTaskDelete(nullptr);
+        return;
+    }
+    esp_http_client_fetch_headers(client);
+    std::vector<int16_t> chunk(480);
+    int total = 0;
+    int64_t deadline = esp_timer_get_time();
+    while (true) {
+        int want = chunk.size() * 2;
+        int got = esp_http_client_read(client, reinterpret_cast<char*>(chunk.data()), want);
+        if (got <= 0) {
+            break;
+        }
+        int samples = got / 2;
+        chunk.resize(samples);
+        codec->OutputData(chunk);
+        PaceAfter(codec, static_cast<size_t>(samples), &deadline);
+        chunk.resize(480);
+        total += got;
+    }
+    ESP_LOGI("FoxyMusic", "raw test done, %d bytes", total);
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+    vTaskDelete(nullptr);
+}
+
+void FoxyMusic::PlayRawTest() {
+    xTaskCreate(RawTestTask, "rawtest", 6144, nullptr, 3, nullptr);
 }
 
 void FoxyMusic::TaskEntry(void* arg) {
@@ -572,6 +680,8 @@ std::string FoxyMusic::LyricAt(int elapsed_ms) const {
     }
     return current;
 }
+
+
 
 
 

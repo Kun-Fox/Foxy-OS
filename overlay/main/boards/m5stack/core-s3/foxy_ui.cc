@@ -805,7 +805,14 @@ void FoxyUI::HandleMusicCommand(const std::string& action, int index) {
         }
     } else if (action == "pause") {
         music.TogglePause();
-    } else if (action == "stop") {
+    } else if (action == "raw") {
+            FoxyMusic::Get().PlayRawTest();
+            return;
+        } else if (action == "beep") {
+            FoxyMusic::Get().PlayTone();
+            return;
+        }
+        if (action == "stop") {
         music.Stop();
     } else if (action == "next") {
         music.Next();
@@ -2148,6 +2155,7 @@ void FoxyUI::SimulateTouch(int x1, int y1, int x2, int y2) {
     bool short_tap = (dx > -18 && dx < 18 && dy > -18 && dy < 18);
     OnRelease(x2, y2, short_tap);
 }
+
 
 
 
