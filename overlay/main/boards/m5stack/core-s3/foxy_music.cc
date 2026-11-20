@@ -284,7 +284,12 @@ int FoxyMusic::ElapsedSeconds() const {
 
 std::string FoxyMusic::StatusText() const {
     if (!playing_) {
-        return "未播放";
+        std::string extra;
+        {
+            std::lock_guard<std::mutex> lock(status_mutex_);
+            extra = status_;
+        }
+        return extra.empty() ? "未播放" : extra;
     }
     if (paused_) {
         return "已暂停";
@@ -304,6 +309,15 @@ void FoxyMusic::TaskEntry(void* arg) {
 }
 
 void FoxyMusic::TaskLoop(int index, int generation) {
+    // 输出通道可能是关着的（静音、或别的流程关过）：播放前显式打开，
+    // 否则 OutputData 一路丢样本，日志看着一切正常、耳朵里一点声都没有。
+    codec_->EnableOutput(true);
+    if (codec_->output_volume() <= 0) {
+        codec_->SetOutputVolume(40);
+    }
+    ESP_LOGI(TAG, "codec output enabled=%d volume=%d", (int)codec_->output_enabled(),
+             codec_->output_volume());
+
     char url[192];
     snprintf(url, sizeof(url), "%s/debug/music/file?index=%d", base_url_.c_str(), index);
 
@@ -319,6 +333,12 @@ void FoxyMusic::TaskLoop(int index, int generation) {
     if (esp_http_client_open(client, 0) != ESP_OK) {
         ESP_LOGE(TAG, "open %s failed", url);
         esp_http_client_cleanup(client);
+        // 连不上服务器时给屏幕上留句话，别让人对着黑屏猜
+        {
+            std::lock_guard<std::mutex> lock(status_mutex_);
+            status_ = "连不上电脑";
+        }
+        playing_ = false;
         return;
     }
     esp_http_client_fetch_headers(client);
@@ -545,5 +565,8 @@ std::string FoxyMusic::LyricAt(int elapsed_ms) const {
     }
     return current;
 }
+
+
+
 
 

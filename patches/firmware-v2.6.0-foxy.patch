@@ -881,10 +881,10 @@ index 0000000..5ecefbf
 +
 diff --git a/main/boards/m5stack/core-s3/foxy_music.cc b/main/boards/m5stack/core-s3/foxy_music.cc
 new file mode 100644
-index 0000000..5c3d866
+index 0000000..27e370f
 --- /dev/null
 +++ b/main/boards/m5stack/core-s3/foxy_music.cc
-@@ -0,0 +1,549 @@
+@@ -0,0 +1,572 @@
 +#include "foxy_music.h"
 +
 +#include <cstdio>
@@ -1171,7 +1171,12 @@ index 0000000..5c3d866
 +
 +std::string FoxyMusic::StatusText() const {
 +    if (!playing_) {
-+        return "未播放";
++        std::string extra;
++        {
++            std::lock_guard<std::mutex> lock(status_mutex_);
++            extra = status_;
++        }
++        return extra.empty() ? "未播放" : extra;
 +    }
 +    if (paused_) {
 +        return "已暂停";
@@ -1191,6 +1196,15 @@ index 0000000..5c3d866
 +}
 +
 +void FoxyMusic::TaskLoop(int index, int generation) {
++    // 输出通道可能是关着的（静音、或别的流程关过）：播放前显式打开，
++    // 否则 OutputData 一路丢样本，日志看着一切正常、耳朵里一点声都没有。
++    codec_->EnableOutput(true);
++    if (codec_->output_volume() <= 0) {
++        codec_->SetOutputVolume(40);
++    }
++    ESP_LOGI(TAG, "codec output enabled=%d volume=%d", (int)codec_->output_enabled(),
++             codec_->output_volume());
++
 +    char url[192];
 +    snprintf(url, sizeof(url), "%s/debug/music/file?index=%d", base_url_.c_str(), index);
 +
@@ -1206,6 +1220,12 @@ index 0000000..5c3d866
 +    if (esp_http_client_open(client, 0) != ESP_OK) {
 +        ESP_LOGE(TAG, "open %s failed", url);
 +        esp_http_client_cleanup(client);
++        // 连不上服务器时给屏幕上留句话，别让人对着黑屏猜
++        {
++            std::lock_guard<std::mutex> lock(status_mutex_);
++            status_ = "连不上电脑";
++        }
++        playing_ = false;
 +        return;
 +    }
 +    esp_http_client_fetch_headers(client);
@@ -1434,12 +1454,15 @@ index 0000000..5c3d866
 +}
 +
 +
++
++
++
 diff --git a/main/boards/m5stack/core-s3/foxy_music.h b/main/boards/m5stack/core-s3/foxy_music.h
 new file mode 100644
-index 0000000..554a746
+index 0000000..db62232
 --- /dev/null
 +++ b/main/boards/m5stack/core-s3/foxy_music.h
-@@ -0,0 +1,79 @@
+@@ -0,0 +1,83 @@
 +#ifndef FOXY_MUSIC_H
 +#define FOXY_MUSIC_H
 +
@@ -1505,20 +1528,24 @@ index 0000000..554a746
 +    std::vector<std::string> names_;
 +    std::vector<int> durations_ms_;
 +
-+    std::atomic<int> index_{ -1 };
-+    std::atomic<int> generation_{ 0 };
-+    std::atomic<bool> playing_{ false };
-+    std::atomic<bool> paused_{ false };
-+    std::atomic<bool> stop_{ false };
-+    std::atomic<int> elapsed_seconds_{ 0 };
-+    std::atomic<int> seek_seconds_{ 0 };
++    std::atomic<int> index_{-1};
++    std::atomic<int> generation_{0};
++    std::atomic<bool> playing_{false};
++    std::atomic<bool> paused_{false};
++    std::atomic<bool> stop_{false};
++    std::atomic<int> elapsed_seconds_{0};
++    std::atomic<int> seek_seconds_{0};
 +
 +    mutable std::mutex cover_mutex_;
 +    std::vector<uint8_t> cover_;
 +    std::vector<std::pair<int, std::string>> lyrics_;
-+};
++
++    mutable std::mutex status_mutex_;
++    std::string status_;};
 +
 +#endif  // FOXY_MUSIC_H
++
++
 diff --git a/main/boards/m5stack/core-s3/foxy_ui.cc b/main/boards/m5stack/core-s3/foxy_ui.cc
 new file mode 100644
 index 0000000..7bc9adb

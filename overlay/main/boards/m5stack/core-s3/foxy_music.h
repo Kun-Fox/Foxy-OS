@@ -63,17 +63,21 @@ private:
     std::vector<std::string> names_;
     std::vector<int> durations_ms_;
 
-    std::atomic<int> index_{ -1 };
-    std::atomic<int> generation_{ 0 };
-    std::atomic<bool> playing_{ false };
-    std::atomic<bool> paused_{ false };
-    std::atomic<bool> stop_{ false };
-    std::atomic<int> elapsed_seconds_{ 0 };
-    std::atomic<int> seek_seconds_{ 0 };
+    std::atomic<int> index_{-1};
+    std::atomic<int> generation_{0};
+    std::atomic<bool> playing_{false};
+    std::atomic<bool> paused_{false};
+    std::atomic<bool> stop_{false};
+    std::atomic<int> elapsed_seconds_{0};
+    std::atomic<int> seek_seconds_{0};
 
     mutable std::mutex cover_mutex_;
     std::vector<uint8_t> cover_;
     std::vector<std::pair<int, std::string>> lyrics_;
-};
+
+    mutable std::mutex status_mutex_;
+    std::string status_;};
 
 #endif  // FOXY_MUSIC_H
+
+
