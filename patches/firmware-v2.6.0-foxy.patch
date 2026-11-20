@@ -881,10 +881,10 @@ index 0000000..5ecefbf
 +
 diff --git a/main/boards/m5stack/core-s3/foxy_music.cc b/main/boards/m5stack/core-s3/foxy_music.cc
 new file mode 100644
-index 0000000..27e370f
+index 0000000..3236e87
 --- /dev/null
 +++ b/main/boards/m5stack/core-s3/foxy_music.cc
-@@ -0,0 +1,572 @@
+@@ -0,0 +1,579 @@
 +#include "foxy_music.h"
 +
 +#include <cstdio>
@@ -1338,6 +1338,12 @@ index 0000000..27e370f
 +}
 +
 +bool FoxyMusic::LoadCover(int index) {
++    {
++        std::lock_guard<std::mutex> lock(cover_mutex_);
++        if (cover_index_ == index && cover_.size() == 320 * 240 * 2) {
++            return true;  // 同一首已经拉过封面，直接用，别再去占网络
++        }
++    }
 +    char url[192];
 +    snprintf(url, sizeof(url), "%s/debug/music/cover?index=%d&fmt=rgb565&w=320&h=240",
 +             base_url_.c_str(), index);
@@ -1345,7 +1351,7 @@ index 0000000..27e370f
 +
 +    esp_http_client_config_t cfg = {};
 +    cfg.url = url;
-+    cfg.timeout_ms = 15000;
++    cfg.timeout_ms = 2500;
 +    cfg.buffer_size = 4096;
 +    esp_http_client_handle_t client = esp_http_client_init(&cfg);
 +    if (client == nullptr) {
@@ -1373,6 +1379,7 @@ index 0000000..27e370f
 +    }
 +    std::lock_guard<std::mutex> lock(cover_mutex_);
 +    cover_ = std::move(buffer);
++    cover_index_ = index;
 +    ESP_LOGI(TAG, "cover index=%d ready", index);
 +    return true;
 +}
@@ -1391,7 +1398,7 @@ index 0000000..27e370f
 +
 +    esp_http_client_config_t cfg = {};
 +    cfg.url = url;
-+    cfg.timeout_ms = 8000;
++    cfg.timeout_ms = 1500;
 +    cfg.buffer_size = 2048;
 +    esp_http_client_handle_t client = esp_http_client_init(&cfg);
 +    if (client == nullptr) {
@@ -1459,10 +1466,10 @@ index 0000000..27e370f
 +
 diff --git a/main/boards/m5stack/core-s3/foxy_music.h b/main/boards/m5stack/core-s3/foxy_music.h
 new file mode 100644
-index 0000000..db62232
+index 0000000..0bb0fc5
 --- /dev/null
 +++ b/main/boards/m5stack/core-s3/foxy_music.h
-@@ -0,0 +1,83 @@
+@@ -0,0 +1,84 @@
 +#ifndef FOXY_MUSIC_H
 +#define FOXY_MUSIC_H
 +
@@ -1538,6 +1545,7 @@ index 0000000..db62232
 +
 +    mutable std::mutex cover_mutex_;
 +    std::vector<uint8_t> cover_;
++    int cover_index_ = -1;
 +    std::vector<std::pair<int, std::string>> lyrics_;
 +
 +    mutable std::mutex status_mutex_;
@@ -1548,10 +1556,10 @@ index 0000000..db62232
 +
 diff --git a/main/boards/m5stack/core-s3/foxy_ui.cc b/main/boards/m5stack/core-s3/foxy_ui.cc
 new file mode 100644
-index 0000000..7bc9adb
+index 0000000..1f53788
 --- /dev/null
 +++ b/main/boards/m5stack/core-s3/foxy_ui.cc
-@@ -0,0 +1,2121 @@
+@@ -0,0 +1,2154 @@
 +#include "foxy_ui.h"
 +
 +#include "audio/audio_codec.h"
@@ -1572,6 +1580,7 @@ index 0000000..7bc9adb
 +#include <vector>
 +
 +#include <cstdlib>
++#include <atomic>
 +#include <cstring>
 +#include <ctime>
 +
@@ -2239,6 +2248,16 @@ index 0000000..7bc9adb
 +}
 +
 +void FoxyUI::LoadMusicAssets(int index) {
++    // 同一时刻只允许一个封面/歌词拉取任务，避免切页与刷新任务撞在一起各拉一遍
++    static std::atomic<bool> loading{false};
++    if (loading.exchange(true)) {
++        return;
++    }
++    struct Release {
++        std::atomic<bool>* flag;
++        ~Release() { flag->store(false); }
++    } release{&loading};
++
 +    if (index < 0) {
 +        return;
 +    }
@@ -2313,6 +2332,25 @@ index 0000000..7bc9adb
 +    UpdateMusicProgress();
 +    if (lyrics_visible_) {
 +        UpdateLyrics();
++    }
++}
++
++static int g_pending_asset_index = -1;
++
++static void MusicAssetsDeferredCb(lv_timer_t* timer) {
++    lv_timer_delete(timer);
++    int index = g_pending_asset_index;
++    g_pending_asset_index = -1;
++    if (index >= 0) {
++        FoxyUI::Get().LoadMusicAssets(index);
++    }
++}
++
++void FoxyUI::ScheduleMusicAssets(int index) {
++    g_pending_asset_index = index;
++    lv_timer_t* timer = lv_timer_create(MusicAssetsDeferredCb, 80, nullptr);
++    if (timer != nullptr) {
++        lv_timer_set_repeat_count(timer, 1);
 +    }
 +}
 +
@@ -2603,13 +2641,14 @@ index 0000000..7bc9adb
 +            UpdateMusicPage();
 +            // 列表要从服务器拉，别卡住 UI 线程
 +            xTaskCreate(MusicRefreshTask, "music_list", 4096, nullptr, 3, nullptr);
-+            // 没在播的时候也先把当前曲目的封面拉下来，页面打开就是满屏封面
++            // 封面/歌词要发 HTTP，放到页面画完之后再做（用一次性 timer），
++            // 否则点"音乐"会先卡住几百毫秒到十几秒（服务器不通时）。
 +            if (!FoxyMusic::Get().IsPlaying()) {
 +                int index = FoxyMusic::Get().CurrentIndex();
 +                if (index < 0) {
 +                    index = 0;
 +                }
-+                LoadMusicAssets(index);
++                ScheduleMusicAssets(index);
 +            }
 +            break;
 +        case kPageKeyboard:
@@ -3673,12 +3712,14 @@ index 0000000..7bc9adb
 +}
 +
 +
++
++
 diff --git a/main/boards/m5stack/core-s3/foxy_ui.h b/main/boards/m5stack/core-s3/foxy_ui.h
 new file mode 100644
-index 0000000..2323d3d
+index 0000000..c004926
 --- /dev/null
 +++ b/main/boards/m5stack/core-s3/foxy_ui.h
-@@ -0,0 +1,192 @@
+@@ -0,0 +1,194 @@
 +#pragma once
 +
 +#include <lvgl.h>
@@ -3701,6 +3742,8 @@ index 0000000..2323d3d
 +    void OnMove(int x, int y);
 +
 +    void SetPage(int page);
++    void ScheduleMusicAssets(int index);
++    void LoadMusicAssets(int index);
 +    int page() const { return page_; }
 +
 +    // 首页消息卡（服务器推送用）
@@ -3744,7 +3787,6 @@ index 0000000..2323d3d
 +    void UpdateMusicProgress();
 +    void ToggleLyrics();
 +    void UpdateLyrics();
-+    void LoadMusicAssets(int index);
 +    static void MusicAssetTask(void* arg);
 +    bool HandleMusicTap(int x, int y);
 +    static void MusicRefreshTask(void* arg);
@@ -3864,6 +3906,7 @@ index 0000000..2323d3d
 +    int volume_ = 0;
 +    int brightness_ = 100;
 +};
++
 +
 +
 +

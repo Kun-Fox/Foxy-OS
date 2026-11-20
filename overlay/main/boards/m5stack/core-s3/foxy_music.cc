@@ -451,6 +451,12 @@ void FoxyMusic::SeekTo(int seconds) {
 }
 
 bool FoxyMusic::LoadCover(int index) {
+    {
+        std::lock_guard<std::mutex> lock(cover_mutex_);
+        if (cover_index_ == index && cover_.size() == 320 * 240 * 2) {
+            return true;  // 同一首已经拉过封面，直接用，别再去占网络
+        }
+    }
     char url[192];
     snprintf(url, sizeof(url), "%s/debug/music/cover?index=%d&fmt=rgb565&w=320&h=240",
              base_url_.c_str(), index);
@@ -458,7 +464,7 @@ bool FoxyMusic::LoadCover(int index) {
 
     esp_http_client_config_t cfg = {};
     cfg.url = url;
-    cfg.timeout_ms = 15000;
+    cfg.timeout_ms = 2500;
     cfg.buffer_size = 4096;
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
     if (client == nullptr) {
@@ -486,6 +492,7 @@ bool FoxyMusic::LoadCover(int index) {
     }
     std::lock_guard<std::mutex> lock(cover_mutex_);
     cover_ = std::move(buffer);
+    cover_index_ = index;
     ESP_LOGI(TAG, "cover index=%d ready", index);
     return true;
 }
@@ -504,7 +511,7 @@ bool FoxyMusic::LoadLyrics(int index) {
 
     esp_http_client_config_t cfg = {};
     cfg.url = url;
-    cfg.timeout_ms = 8000;
+    cfg.timeout_ms = 1500;
     cfg.buffer_size = 2048;
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
     if (client == nullptr) {

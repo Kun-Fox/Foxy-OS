@@ -20,6 +20,8 @@ public:
     void OnMove(int x, int y);
 
     void SetPage(int page);
+    void ScheduleMusicAssets(int index);
+    void LoadMusicAssets(int index);
     int page() const { return page_; }
 
     // 首页消息卡（服务器推送用）
@@ -63,7 +65,6 @@ private:
     void UpdateMusicProgress();
     void ToggleLyrics();
     void UpdateLyrics();
-    void LoadMusicAssets(int index);
     static void MusicAssetTask(void* arg);
     bool HandleMusicTap(int x, int y);
     static void MusicRefreshTask(void* arg);
@@ -183,6 +184,7 @@ private:
     int volume_ = 0;
     int brightness_ = 100;
 };
+
 
 
 

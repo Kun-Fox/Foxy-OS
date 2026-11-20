@@ -73,6 +73,7 @@ private:
 
     mutable std::mutex cover_mutex_;
     std::vector<uint8_t> cover_;
+    int cover_index_ = -1;
     std::vector<std::pair<int, std::string>> lyrics_;
 
     mutable std::mutex status_mutex_;

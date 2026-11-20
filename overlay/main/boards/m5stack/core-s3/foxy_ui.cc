@@ -18,6 +18,7 @@
 #include <vector>
 
 #include <cstdlib>
+#include <atomic>
 #include <cstring>
 #include <ctime>
 
@@ -685,6 +686,16 @@ void FoxyUI::UpdateMusicProgress() {
 }
 
 void FoxyUI::LoadMusicAssets(int index) {
+    // 同一时刻只允许一个封面/歌词拉取任务，避免切页与刷新任务撞在一起各拉一遍
+    static std::atomic<bool> loading{false};
+    if (loading.exchange(true)) {
+        return;
+    }
+    struct Release {
+        std::atomic<bool>* flag;
+        ~Release() { flag->store(false); }
+    } release{&loading};
+
     if (index < 0) {
         return;
     }
@@ -759,6 +770,25 @@ void FoxyUI::UpdateMusicPage() {
     UpdateMusicProgress();
     if (lyrics_visible_) {
         UpdateLyrics();
+    }
+}
+
+static int g_pending_asset_index = -1;
+
+static void MusicAssetsDeferredCb(lv_timer_t* timer) {
+    lv_timer_delete(timer);
+    int index = g_pending_asset_index;
+    g_pending_asset_index = -1;
+    if (index >= 0) {
+        FoxyUI::Get().LoadMusicAssets(index);
+    }
+}
+
+void FoxyUI::ScheduleMusicAssets(int index) {
+    g_pending_asset_index = index;
+    lv_timer_t* timer = lv_timer_create(MusicAssetsDeferredCb, 80, nullptr);
+    if (timer != nullptr) {
+        lv_timer_set_repeat_count(timer, 1);
     }
 }
 
@@ -1049,13 +1079,14 @@ void FoxyUI::SetPage(int page) {
             UpdateMusicPage();
             // 列表要从服务器拉，别卡住 UI 线程
             xTaskCreate(MusicRefreshTask, "music_list", 4096, nullptr, 3, nullptr);
-            // 没在播的时候也先把当前曲目的封面拉下来，页面打开就是满屏封面
+            // 封面/歌词要发 HTTP，放到页面画完之后再做（用一次性 timer），
+            // 否则点"音乐"会先卡住几百毫秒到十几秒（服务器不通时）。
             if (!FoxyMusic::Get().IsPlaying()) {
                 int index = FoxyMusic::Get().CurrentIndex();
                 if (index < 0) {
                     index = 0;
                 }
-                LoadMusicAssets(index);
+                ScheduleMusicAssets(index);
             }
             break;
         case kPageKeyboard:
@@ -2117,5 +2148,7 @@ void FoxyUI::SimulateTouch(int x1, int y1, int x2, int y2) {
     bool short_tap = (dx > -18 && dx < 18 && dy > -18 && dy < 18);
     OnRelease(x2, y2, short_tap);
 }
+
+
 
 
