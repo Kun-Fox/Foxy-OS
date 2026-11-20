@@ -17,6 +17,8 @@ public:
 
     // 显示/隐藏基类的对话层（状态栏、表情、字幕），四页切换时用
     void SetChatVisible(bool visible);
+    // 长按兜底：任何页面都能一键回首页，避免卡死在某个子页面里。
+    void GoHome();
     void SetChatMessage(const char* role, const char* content) override;
 
     // 服务器推送的消息卡
@@ -56,5 +58,7 @@ private:
 };
 
 #endif  // CORES3_DISPLAY_H
+
+
 
 

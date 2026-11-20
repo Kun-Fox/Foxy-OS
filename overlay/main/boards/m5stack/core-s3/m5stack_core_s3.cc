@@ -250,6 +250,12 @@ private:
             bool short_tap = touch_duration < TOUCH_THRESHOLD_MS;
             auto& app = Application::GetInstance();
 
+            // 长按 0.8 秒以上：不管在哪个页面，直接回首页（防止卡死）
+            if (touch_duration >= 800 && display_ != nullptr) {
+                display_->GoHome();
+                return;
+            }
+
             // 滑动/点击都交给界面判定（用真实抬起坐标，否则滑动永远算不出来）
             if (display_ != nullptr && display_->HandleTouch(last_x, last_y, short_tap)) {
                 return;
@@ -437,3 +443,4 @@ public:
 };
 
 DECLARE_BOARD(M5StackCoreS3Board);
+

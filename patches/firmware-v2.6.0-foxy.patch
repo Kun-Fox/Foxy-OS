@@ -335,10 +335,10 @@ index 03e2baa..b28ad6c 100644
  
 diff --git a/main/boards/m5stack/core-s3/cores3_display.cc b/main/boards/m5stack/core-s3/cores3_display.cc
 new file mode 100644
-index 0000000..886601c
+index 0000000..8db6eea
 --- /dev/null
 +++ b/main/boards/m5stack/core-s3/cores3_display.cc
-@@ -0,0 +1,441 @@
+@@ -0,0 +1,446 @@
 +#include "cores3_display.h"
 +
 +#include "application.h"
@@ -780,12 +780,17 @@ index 0000000..886601c
 +
 +
 +
++
++void CoreS3LcdDisplay::GoHome() {
++    ESP_LOGI(TAG, "long press: back to home");
++    FoxyUI::Get().SetPage(0);
++}
 diff --git a/main/boards/m5stack/core-s3/cores3_display.h b/main/boards/m5stack/core-s3/cores3_display.h
 new file mode 100644
-index 0000000..0fc278c
+index 0000000..cbef674
 --- /dev/null
 +++ b/main/boards/m5stack/core-s3/cores3_display.h
-@@ -0,0 +1,60 @@
+@@ -0,0 +1,64 @@
 +#ifndef CORES3_DISPLAY_H
 +#define CORES3_DISPLAY_H
 +
@@ -805,6 +810,8 @@ index 0000000..0fc278c
 +
 +    // 显示/隐藏基类的对话层（状态栏、表情、字幕），四页切换时用
 +    void SetChatVisible(bool visible);
++    // 长按兜底：任何页面都能一键回首页，避免卡死在某个子页面里。
++    void GoHome();
 +    void SetChatMessage(const char* role, const char* content) override;
 +
 +    // 服务器推送的消息卡
@@ -844,6 +851,8 @@ index 0000000..0fc278c
 +};
 +
 +#endif  // CORES3_DISPLAY_H
++
++
 +
 +
 diff --git a/main/boards/m5stack/core-s3/foxy_music.cc b/main/boards/m5stack/core-s3/foxy_music.cc
@@ -1488,10 +1497,10 @@ index 0000000..554a746
 +#endif  // FOXY_MUSIC_H
 diff --git a/main/boards/m5stack/core-s3/foxy_ui.cc b/main/boards/m5stack/core-s3/foxy_ui.cc
 new file mode 100644
-index 0000000..d1f1582
+index 0000000..a3e0a48
 --- /dev/null
 +++ b/main/boards/m5stack/core-s3/foxy_ui.cc
-@@ -0,0 +1,1948 @@
+@@ -0,0 +1,1958 @@
 +#include "foxy_ui.h"
 +
 +#include "audio/audio_codec.h"
@@ -2587,7 +2596,13 @@ index 0000000..d1f1582
 +        case kPageKeyboard:
 +            SetPage(kPageChat);
 +            break;
++        case kPageNovel:
++        case kPageAlarm:
++            SetPage(kPageAppList);
++            break;
 +        default:
++            // 兜底：任何没显式登记的页面都退回应用页，绝不让用户卡在某一页出不来。
++            SetPage(kPageApps);
 +            break;
 +    }
 +}
@@ -2661,8 +2676,12 @@ index 0000000..d1f1582
 +    // 这样"点一下"或者"轻轻蹭一下"都不会再整页滑走。
 +    if (adx >= kSwipeThreshold && adx > ady * 2) {
 +        if (page_ == kPageNovel) {
-+            // 小说页左右滑动是翻页，不是翻界面
-+            NovelTurn(dx < 0 ? 1 : -1);
++            // 小说页左右滑动是翻页；已经在第一页还往右滑，那就是想退出去。
++            if (dx > 0 && novel_page_ <= 0) {
++                GoBack();
++            } else {
++                NovelTurn(dx < 0 ? 1 : -1);
++            }
 +            return true;
 +        }
 +        if (dx < 0) {
@@ -3628,7 +3647,7 @@ index 0000000..b15ab85
 +
 +
 diff --git a/main/boards/m5stack/core-s3/m5stack_core_s3.cc b/main/boards/m5stack/core-s3/m5stack_core_s3.cc
-index 83d1259..76a263e 100644
+index 83d1259..91edaec 100644
 --- a/main/boards/m5stack/core-s3/m5stack_core_s3.cc
 +++ b/main/boards/m5stack/core-s3/m5stack_core_s3.cc
 @@ -1,9 +1,11 @@
@@ -3690,7 +3709,7 @@ index 83d1259..76a263e 100644
          });
          power_save_timer_->OnExitSleepMode([this]() {
              GetDisplay()->SetPowerSaveMode(false);
-@@ -199,20 +218,45 @@ private:
+@@ -199,20 +218,51 @@ private:
          
          ft6336_->UpdateTouchPoint();
          auto& touch_point = ft6336_->GetTouchPoint();
@@ -3736,6 +3755,12 @@ index 83d1259..76a263e 100644
 +            bool short_tap = touch_duration < TOUCH_THRESHOLD_MS;
 +            auto& app = Application::GetInstance();
 +
++            // 长按 0.8 秒以上：不管在哪个页面，直接回首页（防止卡死）
++            if (touch_duration >= 800 && display_ != nullptr) {
++                display_->GoHome();
++                return;
++            }
++
 +            // 滑动/点击都交给界面判定（用真实抬起坐标，否则滑动永远算不出来）
 +            if (display_ != nullptr && display_->HandleTouch(last_x, last_y, short_tap)) {
 +                return;
@@ -3746,7 +3771,7 @@ index 83d1259..76a263e 100644
                  if (app.GetDeviceState() == kDeviceStateStarting) {
                      EnterWifiConfigMode();
                      return;
-@@ -264,7 +308,7 @@ private:
+@@ -264,7 +314,7 @@ private:
          io_config.cs_gpio_num = GPIO_NUM_3;
          io_config.dc_gpio_num = GPIO_NUM_35;
          io_config.spi_mode = 2;
@@ -3755,7 +3780,7 @@ index 83d1259..76a263e 100644
          io_config.trans_queue_depth = 10;
          io_config.lcd_cmd_bits = 8;
          io_config.lcd_param_bits = 8;
-@@ -285,7 +329,7 @@ private:
+@@ -285,7 +335,7 @@ private:
          esp_lcd_panel_swap_xy(panel, DISPLAY_SWAP_XY);
          esp_lcd_panel_mirror(panel, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y);
  
@@ -3764,6 +3789,11 @@ index 83d1259..76a263e 100644
                                      DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
      }
  
+@@ -393,3 +443,4 @@ public:
+ };
+ 
+ DECLARE_BOARD(M5StackCoreS3Board);
++
 diff --git a/main/display/display.h b/main/display/display.h
 index c5b0c42..7dfa552 100644
 --- a/main/display/display.h

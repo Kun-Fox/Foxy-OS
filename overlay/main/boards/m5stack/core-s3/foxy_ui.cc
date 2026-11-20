@@ -1093,7 +1093,13 @@ void FoxyUI::GoBack() {
         case kPageKeyboard:
             SetPage(kPageChat);
             break;
+        case kPageNovel:
+        case kPageAlarm:
+            SetPage(kPageAppList);
+            break;
         default:
+            // 兜底：任何没显式登记的页面都退回应用页，绝不让用户卡在某一页出不来。
+            SetPage(kPageApps);
             break;
     }
 }
@@ -1167,8 +1173,12 @@ bool FoxyUI::OnRelease(int x, int y, bool short_tap) {
     // 这样"点一下"或者"轻轻蹭一下"都不会再整页滑走。
     if (adx >= kSwipeThreshold && adx > ady * 2) {
         if (page_ == kPageNovel) {
-            // 小说页左右滑动是翻页，不是翻界面
-            NovelTurn(dx < 0 ? 1 : -1);
+            // 小说页左右滑动是翻页；已经在第一页还往右滑，那就是想退出去。
+            if (dx > 0 && novel_page_ <= 0) {
+                GoBack();
+            } else {
+                NovelTurn(dx < 0 ? 1 : -1);
+            }
             return true;
         }
         if (dx < 0) {

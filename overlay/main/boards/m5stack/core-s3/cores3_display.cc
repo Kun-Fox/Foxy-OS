@@ -439,3 +439,8 @@ bool CoreS3LcdDisplay::HandleTouch(int x, int y, bool short_tap) {
 
 
 
+
+void CoreS3LcdDisplay::GoHome() {
+    ESP_LOGI(TAG, "long press: back to home");
+    FoxyUI::Get().SetPage(0);
+}
