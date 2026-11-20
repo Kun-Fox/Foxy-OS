@@ -110,3 +110,15 @@ CoreS3 的 LCD：SCLK=G36、MOSI=G37、DC=G35、CS=G3；TF 卡：SCLK=G36、MOSI
 **G35 同时是屏的 D/C 和卡的 MISO**，M5GFX 是靠"切片选时翻转引脚方向"绕过去的，ESP-IDF 的 sdspi 驱动默认把 MISO 当输入用，直接初始化会和屏抢引脚。
 本项目的取舍：音乐走电脑端 HTTP 流式播放（已验证可行，见 `foxy_music.cc`），暂不做 SD 本地播放；
 若以后要上 SD，优先走 Grove Port B（G8/G9）外接 SD 模块，或改用带独立 SPI 的扩展底座，避免动这块共享总线。
+
+## 22. 自带字库是子集，缺字会静默变空白
+
+`78__xiaozhi-fonts` 里的 `font_noto_sans_basic_16_4` 只有 3884 字左右的子集，**「暂」「消」这类常用字都不在里面**，缺字不报错、直接零宽度，于是「暂无新消息」会显示成「无新息」。
+解决：用 `lv_font_conv` 自己生成——`node lv_font_conv.js --font C:\Windows\Fonts\simhei.ttf --size 16 --bpp 2 --format lvgl --no-compress --lv-font-name font_foxy_16 --symbols <内联字符> -o font_foxy_16.c`。
+两个坑：①`--symbols` 只接受**内联字符**，传文件路径会把它当成字符串逐字解析；②`.ttc`（微软雅黑）会报 `Unsupported OpenType signature ttcf`，用 `.ttf`（simhei/simkai/Deng）。
+字符集：GB2312 一级 3755 字 + 源码里出现的所有中文 + 符号，约 3884 字，16px/2bpp 约 250KB。
+
+## 23. 换字体后标签只剩一个字
+
+`lv_obj_set_style_text_font()` 换字体不会重算已有 label 的宽度，宽度还是旧字体量出来的，于是显示成截断（「消息」→「息」）。
+两种解法：①给 screen 先设字体、再创建页面（子控件继承）；②换字体后 `lv_obj_set_width(label, LV_SIZE_CONTENT)`。
