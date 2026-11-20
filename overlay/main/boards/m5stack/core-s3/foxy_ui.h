@@ -165,6 +165,7 @@ private:
     lv_obj_t* back_touch_ = nullptr;
     lv_obj_t* back_calc_ = nullptr;
     lv_obj_t* clock_label_ = nullptr;
+    lv_obj_t* status_label_ = nullptr;
     lv_obj_t* date_label_ = nullptr;
     lv_obj_t* msg_labels_[3] = {nullptr, nullptr, nullptr};
     lv_obj_t* vol_label_ = nullptr;

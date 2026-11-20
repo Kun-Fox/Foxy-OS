@@ -35,6 +35,12 @@ extern "C" lv_font_t* lv_binfont_create_from_buffer(void* buffer, uint32_t size)
 namespace {
 constexpr int kScreenW = 320;
 constexpr int kScreenH = 240;
+// 计算器 4x4 键区：布局与命中判定共用一套常量
+constexpr int kCalcKeyW = 76;
+constexpr int kCalcKeyH = 36;
+constexpr int kCalcKeyGap = 3;
+constexpr int kCalcKeyLeft = 3;
+constexpr int kCalcKeyTop = 76;
 constexpr int kBarH = 42;
 constexpr int kStatusH = 0;                          // 不再保留状态栏，四页铺满整屏
 constexpr int kPageH = kScreenH - kStatusH;          // 240，无栏铺满整屏
@@ -130,6 +136,34 @@ lv_obj_t* MakeCard(lv_obj_t* parent, int x, int y, int w, int h) {
     return card;
 }
 
+static void ToastDeleteCb(lv_timer_t* t) {
+    lv_obj_t* obj = static_cast<lv_obj_t*>(lv_timer_get_user_data(t));
+    if (obj != nullptr) {
+        lv_obj_delete(obj);
+    }
+    lv_timer_delete(t);
+}
+
+// 轻提示：底部浮一条 1.2 秒后自动消失的小胶囊
+static void ShowToast(lv_obj_t* parent, const char* text) {
+    if (parent == nullptr) {
+        return;
+    }
+    lv_obj_t* box = lv_obj_create(parent);
+    lv_obj_remove_style_all(box);
+    lv_obj_set_size(box, 168, 34);
+    lv_obj_align(box, LV_ALIGN_BOTTOM_MID, 0, -56);
+    lv_obj_set_style_bg_color(box, lv_color_hex(0x2A2A32), 0);
+    lv_obj_set_style_bg_opa(box, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(box, 17, 0);
+    lv_obj_clear_flag(box, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_t* label = lv_label_create(box);
+    lv_label_set_text(label, text);
+    lv_obj_set_style_text_color(label, lv_color_hex(0xF2F2F5), 0);
+    lv_obj_center(label);
+    lv_timer_t* timer = lv_timer_create(ToastDeleteCb, 1200, box);
+    lv_timer_set_repeat_count(timer, 1);
+}
 // 给已有标签换字体后，LVGL 仍按旧字体的宽度排版，会出现只剩一个字的情况；
 // 这里换完字体把宽度拉回自适应。
 static void SetLabelFont(lv_obj_t* label, const lv_font_t* font) {
@@ -224,6 +258,17 @@ void SlideIn(lv_obj_t* page, int dir) {
     lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
     lv_anim_set_exec_cb(&a, AnimXCallback);
     lv_anim_start(&a);
+    lv_obj_set_style_opa(page, LV_OPA_0, 0);
+    lv_anim_t fade;
+    lv_anim_init(&fade);
+    lv_anim_set_var(&fade, page);
+    lv_anim_set_values(&fade, LV_OPA_0, LV_OPA_COVER);
+    lv_anim_set_time(&fade, 150);
+    lv_anim_set_path_cb(&fade, lv_anim_path_ease_out);
+    lv_anim_set_exec_cb(&fade, [](void* var, int32_t v) {
+        lv_obj_set_style_opa(static_cast<lv_obj_t*>(var), static_cast<lv_opa_t>(v), 0);
+    });
+    lv_anim_start(&fade);
 }
 
 FoxyUI& FoxyUI::Get() {
@@ -377,13 +422,25 @@ void FoxyUI::BuildHome() {
     SetLabelFont(clock_label_, font20_);
 
     date_label_ = MakeLabel(home_, "----/--/--", kTextDim);
-    lv_obj_set_pos(date_label_, 150, 50);
+    lv_obj_set_pos(date_label_, 150, 46);
     SetLabelFont(date_label_, font14_);
 
     lv_obj_t* msg_title = MakeLabel(home_, "消息", 0x8A8A92);
-    lv_obj_set_pos(msg_title, 140, 68);
+    lv_obj_set_pos(msg_title, 140, 70);
     SetLabelFont(msg_title, font14_);
-    lv_obj_t* msg_card = MakeCard(home_, 136, 88, 172, 104);
+    status_label_ = MakeLabel(home_, "", 0x8A8A92);
+    lv_obj_set_pos(status_label_, 250, 198);
+    SetLabelFont(status_label_, font14_);
+    lv_obj_t* msg_card = MakeCard(home_, 136, 90, 172, 102);
+    for (int i = 1; i <= 2; i++) {
+        lv_obj_t* line = lv_obj_create(msg_card);
+        lv_obj_remove_style_all(line);
+        lv_obj_set_pos(line, 0, i * 34);
+        lv_obj_set_size(line, 140, 1);
+        lv_obj_set_style_bg_color(line, lv_color_hex(0x33333C), 0);
+        lv_obj_set_style_bg_opa(line, LV_OPA_COVER, 0);
+        lv_obj_clear_flag(line, LV_OBJ_FLAG_CLICKABLE);
+    }
     for (int i = 0; i < 3; i++) {
         msg_labels_[i] = MakeLabel(msg_card, i == 0 ? "暂无新消息" : "", i == 0 ? 0xA8A8B2 : 0xE8E8EE);
         lv_label_set_long_mode(msg_labels_[i], LV_LABEL_LONG_CLIP);
@@ -415,30 +472,34 @@ static void DrawIcon(lv_obj_t* cell, int kind) {
     lv_obj_t* box = lv_obj_create(cell);
     lv_obj_remove_style_all(box);
     lv_obj_set_size(box, 40, 40);
-    lv_obj_set_pos(box, (kCellW - 40) / 2, 12);
+    lv_obj_set_pos(box, (kCellW - 40) / 2, 8);
     lv_obj_clear_flag(box, LV_OBJ_FLAG_CLICKABLE);
     const uint32_t ink = 0xF2F2F5;
 
     if (kind == 0) {
-        // 设置：一个大圆 + 中心小点 + 上下左右四个短齿
-        IconPart(box, 8, 8, 24, 24, LV_RADIUS_CIRCLE, ink);
-        IconPart(box, 17, 17, 6, 6, LV_RADIUS_CIRCLE, ink);
-        IconPart(box, 18, 1, 4, 5, 2, ink);
-        IconPart(box, 18, 34, 4, 5, 2, ink);
-        IconPart(box, 1, 18, 5, 4, 2, ink);
-        IconPart(box, 34, 18, 5, 4, 2, ink);
+        // 设置：齿轮 = 外圈 + 挖空 + 中心点 + 四齿
+        IconPart(box, 7, 7, 26, 26, LV_RADIUS_CIRCLE, ink);
+        IconPart(box, 11, 11, 18, 18, LV_RADIUS_CIRCLE, 0x262626);
+        IconPart(box, 18, 18, 4, 4, LV_RADIUS_CIRCLE, ink);
+        IconPart(box, 18, 1, 4, 6, 2, ink);
+        IconPart(box, 18, 33, 4, 6, 2, ink);
+        IconPart(box, 1, 18, 6, 4, 2, ink);
+        IconPart(box, 33, 18, 6, 4, 2, ink);
     } else if (kind == 1) {
-        // 应用：四宫格
+        // 应用：四宫格，留出均匀的缝
         for (int i = 0; i < 4; i++) {
-            IconPart(box, 6 + (i % 2) * 15, 6 + (i / 2) * 15, 13, 13, 4, ink);
+            IconPart(box, 5 + (i % 2) * 17, 5 + (i / 2) * 17, 13, 13, 4, ink);
         }
     } else if (kind == 2) {
-        // 对话：圆角气泡 + 左下角小尾巴
-        IconPart(box, 4, 8, 32, 22, 7, ink);
-        IconPart(box, 9, 28, 8, 5, 2, ink);
+        // 对话：圆角气泡 + 左下小尾巴 + 三个点
+        IconPart(box, 4, 8, 32, 22, 8, ink);
+        IconPart(box, 10, 27, 8, 5, 2, ink);
+        IconPart(box, 10, 17, 4, 4, LV_RADIUS_CIRCLE, 0x262626);
+        IconPart(box, 18, 17, 4, 4, LV_RADIUS_CIRCLE, 0x262626);
+        IconPart(box, 26, 17, 4, 4, LV_RADIUS_CIRCLE, 0x262626);
     } else {
-        // 工具：斜杆 + 圆头，像把螺丝刀
-        static lv_point_precise_t pts[2] = {{6, 32}, {28, 10}};
+        // 工具：扳手 = 斜杆 + 端头圆环
+        static lv_point_precise_t pts[2] = {{7, 33}, {25, 15}};
         lv_obj_t* line = lv_line_create(box);
         lv_obj_set_size(line, 40, 40);
         lv_line_set_points(line, pts, 2);
@@ -446,10 +507,10 @@ static void DrawIcon(lv_obj_t* cell, int kind) {
         lv_obj_set_style_line_color(line, lv_color_hex(ink), 0);
         lv_obj_set_style_line_rounded(line, true, 0);
         lv_obj_clear_flag(line, LV_OBJ_FLAG_CLICKABLE);
-        IconPart(box, 22, 4, 13, 13, LV_RADIUS_CIRCLE, ink);
+        IconPart(box, 22, 3, 14, 14, LV_RADIUS_CIRCLE, ink);
+        IconPart(box, 26, 7, 6, 6, LV_RADIUS_CIRCLE, 0x262626);
     }
 }
-
 void FoxyUI::BuildApps() {
     const char* names[4] = {"设置", "应用", "对话", "工具"};
     for (int i = 0; i < 4; i++) {
@@ -459,7 +520,7 @@ void FoxyUI::BuildApps() {
                                   kGridMargin + row * (kCellH + kGridGap), kCellW, kCellH);
         DrawIcon(cell, i);
         lv_obj_t* label = MakeLabel(cell, names[i], 0xCCCCCC);
-        lv_obj_align(label, LV_ALIGN_BOTTOM_MID, 0, -12);
+        lv_obj_align(label, LV_ALIGN_BOTTOM_MID, 0, -8);
     }
 }
 
@@ -521,7 +582,7 @@ void FoxyUI::BuildAppList() {
         lv_obj_t* row = MakeCard(applist_, kRowX, kRowTop + i * kRowStride, kRowW, kRowH);
         lv_obj_t* label = MakeLabel(row, names[i], 0xF2F2F5);
         lv_obj_align(label, LV_ALIGN_LEFT_MID, 16, 0);
-        lv_obj_t* chevron = MakeLabel(row, ">", 0x777777);
+        lv_obj_t* chevron = MakeLabel(row, ">", 0x9A9AA2);
         lv_obj_align(chevron, LV_ALIGN_RIGHT_MID, -16, 0);
     }
 }
@@ -536,7 +597,7 @@ void FoxyUI::BuildToolList() {
         lv_obj_t* row = MakeCard(toollist_, kRowX, kRowTop + i * kRowStride, kRowW, kRowH);
         lv_obj_t* label = MakeLabel(row, names[i], 0xF2F2F5);
         lv_obj_align(label, LV_ALIGN_LEFT_MID, 16, 0);
-        lv_obj_t* chevron = MakeLabel(row, ">", 0x777777);
+        lv_obj_t* chevron = MakeLabel(row, ">", 0x9A9AA2);
         lv_obj_align(chevron, LV_ALIGN_RIGHT_MID, -16, 0);
     }
 }
@@ -570,7 +631,7 @@ void FoxyUI::BuildCalculator() {
     lv_obj_t* title = MakeLabel(calc_, "计算器", 0xF2F2F5);
     lv_obj_set_pos(title, 14, 12);
 
-    lv_obj_t* display = MakeCard(calc_, 3, 40, 314, 40);
+    lv_obj_t* display = MakeCard(calc_, 6, 34, 308, 36);
     lv_obj_set_style_radius(display, 12, 0);
     calc_label_ = MakeLabel(display, "0", 0xF2F2F5);
     lv_obj_set_width(calc_label_, LV_SIZE_CONTENT);
@@ -580,11 +641,11 @@ void FoxyUI::BuildCalculator() {
     // 4 列 × 4 行键盘，键宽 76、高 38
     const char* keys[16] = {"7", "8", "9", "÷", "4", "5", "6", "×",
                             "1", "2", "3", "−", "C", "0", "=", "+"};
-    constexpr int kKeyW = 76;
-    constexpr int kKeyH = 38;
-    constexpr int kKeyGap = 3;
-    constexpr int kKeyLeft = 3;
-    constexpr int kKeyTop = 80;
+    constexpr int kKeyW = kCalcKeyW;
+    constexpr int kKeyH = kCalcKeyH;
+    constexpr int kKeyGap = kCalcKeyGap;
+    constexpr int kKeyLeft = kCalcKeyLeft;
+    constexpr int kKeyTop = kCalcKeyTop;
     for (int i = 0; i < 16; i++) {
         int col = i % 4;
         int row = i / 4;
@@ -626,16 +687,16 @@ void FoxyUI::BuildChat() {
     }
     chat_art_ = lv_image_create(chat_);
     lv_image_set_src(chat_art_, &g_chat_dsc);
-    lv_obj_set_pos(chat_art_, (kScreenW - kChatW) / 2, 40);
+    lv_obj_set_pos(chat_art_, (kScreenW - kChatW) / 2, 54);
     lv_obj_clear_flag(chat_art_, LV_OBJ_FLAG_CLICKABLE);
 
     // 字幕：三行，居中，长文本自动换行
     chat_text_ = MakeLabel(chat_, "按住屏幕说句话，或者从左下角打字喵", 0xF2F2F5);
     lv_obj_set_width(chat_text_, 296);
-    lv_obj_set_pos(chat_text_, 12, 172);
+    lv_obj_set_pos(chat_text_, 16, 168);
     lv_label_set_long_mode(chat_text_, LV_LABEL_LONG_WRAP);
     lv_obj_set_style_text_align(chat_text_, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_line_space(chat_text_, 4, 0);
+    lv_obj_set_style_text_line_space(chat_text_, 8, 0);
     lv_obj_set_style_text_color(chat_text_, lv_color_hex(0xF2F2F5), 0);
 }
 
@@ -645,6 +706,9 @@ void FoxyUI::SetChatText(const std::string& text) {
     }
     DisplayLockGuard lock(display_);
     std::string shown = text;
+    if (shown.find("待命中") != std::string::npos) {
+        shown = "摸摸屏幕，或说 Hi ESP 叫醒我";
+    }
     if (shown.size() > 120) {
         shown = shown.substr(0, 120) + "…";
     }
@@ -748,16 +812,19 @@ void FoxyUI::BuildMusic() {
     lyrics_panel_ = lv_obj_create(music_);
     lv_obj_remove_style_all(lyrics_panel_);
     lv_obj_set_pos(lyrics_panel_, 0, 0);
-    lv_obj_set_size(lyrics_panel_, kScreenW, 160);
+    lv_obj_set_size(lyrics_panel_, kScreenW, kScreenH);
     lv_obj_set_style_bg_color(lyrics_panel_, lv_color_hex(0x141414), 0);
     lv_obj_set_style_bg_opa(lyrics_panel_, LV_OPA_COVER, 0);
     lv_obj_clear_flag(lyrics_panel_, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_flag(lyrics_panel_, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_t* lyr_title = MakeLabel(lyrics_panel_, "歌词", 0x8A8A92);
+    lv_obj_set_pos(lyr_title, 14, 14);
+    SetLabelFont(lyr_title, font14_);
     for (int i = 0; i < 5; i++) {
         lyric_labels_[i] = MakeLabel(lyrics_panel_, "", kTextDim);
         lv_obj_set_width(lyric_labels_[i], 292);
         lv_obj_set_style_text_align(lyric_labels_[i], LV_TEXT_ALIGN_CENTER, 0);
-        lv_obj_set_pos(lyric_labels_[i], 14, 18 + i * 26);
+        lv_obj_set_pos(lyric_labels_[i], 14, 40 + i * 30);
         lv_label_set_long_mode(lyric_labels_[i], LV_LABEL_LONG_CLIP);
     }
 
@@ -795,7 +862,7 @@ void FoxyUI::UpdateLyrics() {
             lv_label_set_long_mode(lyric_labels_[0], LV_LABEL_LONG_WRAP);
             lv_obj_set_style_text_align(lyric_labels_[0], LV_TEXT_ALIGN_CENTER, 0);
             lv_obj_set_style_text_line_space(lyric_labels_[0], 8, 0);
-            lv_obj_set_pos(lyric_labels_[0], 14, 34);
+            lv_obj_set_pos(lyric_labels_[0], 14, 80);
             lv_obj_set_style_text_color(lyric_labels_[0], lv_color_hex(kTextDim), 0);
             lv_label_set_text(lyric_labels_[0], "这首没有歌词\n\n把同名 .lrc 放进 music 目录");
         }
@@ -1046,14 +1113,14 @@ bool FoxyUI::HandleMusicTap(int x, int y) {
         return true;
     }
 
-    if (y < 148) {
+    if (y < 166) {
         // 点封面：切歌词
         ToggleLyrics();
         return true;
     }
 
     // 进度条区域：点哪跳哪
-    if (y >= 168 && y <= 190 && x >= 8 && x <= 312) {
+    if (y >= 168 && y <= 192 && x >= 8 && x <= 312) {
         int duration_ms = music.DurationMs();
         if (duration_ms > 0) {
             int ratio = (x - 14) * 1000 / 292;
@@ -1317,11 +1384,11 @@ bool FoxyUI::OnPress(int x, int y) {
     }
     if (page_ == kPageCalc) {
         // 计算器在按下时就出结果：手指一碰键帽，显示条立刻变，不用等抬起。
-        constexpr int kKeyW = 76;
-        constexpr int kKeyH = 38;
-        constexpr int kKeyGap = 3;
-        constexpr int kKeyLeft = 3;
-        constexpr int kKeyTop = 80;
+        constexpr int kKeyW = kCalcKeyW;
+        constexpr int kKeyH = kCalcKeyH;
+        constexpr int kKeyGap = kCalcKeyGap;
+        constexpr int kKeyLeft = kCalcKeyLeft;
+        constexpr int kKeyTop = kCalcKeyTop;
         int col = (x - kKeyLeft) / (kKeyW + kKeyGap);
         int row = (y - kKeyTop) / (kKeyH + kKeyGap);
         if (col >= 0 && col <= 3 && row >= 0 && row <= 3) {
@@ -1572,6 +1639,7 @@ bool FoxyUI::OnRelease(int x, int y, bool short_tap) {
                 SetPage(kPageAlarm);
             } else {
                 ESP_LOGI(TAG, "app %s not implemented yet", names[index]);
+            ShowToast(applist_, "这个还没做喵");
             }
         }
         return true;
@@ -1597,6 +1665,7 @@ bool FoxyUI::OnRelease(int x, int y, bool short_tap) {
             } else if (index < 5) {
                 static const char* names[5] = {"计算器", "触摸测试", "拍照测试", "文件", "SSH"};
                 ESP_LOGI(TAG, "tool %s not implemented yet", names[index]);
+            ShowToast(toollist_, "这个还没做喵");
             }
         }
         return true;
@@ -1638,12 +1707,12 @@ bool FoxyUI::OnRelease(int x, int y, bool short_tap) {
 bool FoxyUI::HandleSettingsTap(int x, int y) {
     DisplayLockGuard lock(display_);
     // 音量行（标签+轨道整块）点哪都能拖；亮度行同理
-    if (HitTest(vol_track_, x, y) || (y >= 40 && y <= 92)) {
+    if (HitTest(vol_track_, x, y) || (y >= 38 && y <= 102)) {
         drag_ = 1;
         SetVolume(ValueFromX(vol_track_, x, 0, 100));
         return true;
     }
-    if (HitTest(bri_track_, x, y) || (y >= 104 && y <= 156)) {
+    if (HitTest(bri_track_, x, y) || (y >= 108 && y <= 168)) {
         drag_ = 2;
         SetBrightness(ValueFromX(bri_track_, x, 10, 100));
         return true;
@@ -1799,6 +1868,13 @@ void FoxyUI::UpdateClock() {
     }
     DisplayLockGuard lock(display_);
     lv_label_set_text(clock_label_, clock);
+    if (status_label_ != nullptr) {
+        int level = 0; bool charging = false, discharging = false;
+        Board::GetInstance().GetBatteryLevel(level, charging, discharging);
+        char status[48];
+        snprintf(status, sizeof(status), "%d%%%s", level, charging ? " 充电中" : "");
+        lv_label_set_text(status_label_, status);
+    }
     lv_label_set_text(date_label_, date);
 }
 
@@ -1822,7 +1898,7 @@ void FoxyUI::ClockTimerCb(lv_timer_t* timer) {
 
 // ---------------- 屏幕键盘 ----------------
 namespace {
-constexpr int kKbdTop = 58;
+constexpr int kKbdTop = 56;
 constexpr int kKbdKeyH = 32;
 constexpr int kKbdGap = 4;
 constexpr int kKbdMargin = 6;
@@ -2187,7 +2263,7 @@ void FoxyUI::BuildAlarm() {
     alarm_list_ = lv_label_create(card);
     lv_label_set_text(alarm_list_, "读取中…");
     lv_label_set_long_mode(alarm_list_, LV_LABEL_LONG_WRAP);
-    lv_obj_set_width(alarm_list_, 264);
+    lv_obj_set_width(alarm_list_, 272);
     lv_obj_set_pos(alarm_list_, 16, 14);
     lv_obj_set_style_text_color(alarm_list_, lv_color_hex(0xF2F2F5), 0);
     lv_obj_set_style_text_line_space(alarm_list_, 6, 0);
