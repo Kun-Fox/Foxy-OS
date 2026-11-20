@@ -92,6 +92,7 @@ private:
     const lv_font_t* font14_ = nullptr;
     const lv_font_t* font16_ = nullptr;
     const lv_font_t* font18_ = nullptr;
+    const lv_font_t* font20_ = nullptr;
     const lv_font_t* font22_ = nullptr;
     void LoadFonts();
     void ApplyPageFonts();

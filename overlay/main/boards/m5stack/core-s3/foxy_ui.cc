@@ -130,6 +130,13 @@ lv_obj_t* MakeCard(lv_obj_t* parent, int x, int y, int w, int h) {
     return card;
 }
 
+// 给已有标签换字体后，LVGL 仍按旧字体的宽度排版，会出现只剩一个字的情况；
+// 这里换完字体把宽度拉回自适应。
+static void SetLabelFont(lv_obj_t* label, const lv_font_t* font) {
+    if (label == nullptr || font == nullptr) return;
+    lv_obj_set_style_text_font(label, font, 0);
+    lv_obj_set_width(label, LV_SIZE_CONTENT);
+}
 lv_obj_t* MakeLabel(lv_obj_t* parent, const char* text, uint32_t color) {
     lv_obj_t* label = lv_label_create(parent);
     lv_label_set_text(label, text);
@@ -246,10 +253,13 @@ void FoxyUI::LoadFonts() {
 
 void FoxyUI::ApplyPageFonts() {
     // POD2 的观感需要比 20px 更小的字：用固件自带的 noto sans 16px（同为思源黑体子集，含中文）
-    LV_FONT_DECLARE(font_noto_sans_basic_16_4);
+    LV_FONT_DECLARE(font_foxy_16);
+    LV_FONT_DECLARE(font_foxy_14);
     LV_FONT_DECLARE(font_noto_sans_basic_14_1);
-    font16_ = &font_noto_sans_basic_16_4;
-    font14_ = &font_noto_sans_basic_14_1;
+    LV_FONT_DECLARE(font_noto_sans_basic_20_4);
+    font16_ = &font_foxy_16;
+    font14_ = &font_foxy_14;
+    font20_ = &font_noto_sans_basic_20_4;
     lv_obj_set_style_text_font(lv_screen_active(), font16_, 0);
     lv_obj_t* pages[] = {home_, apps_, settings_, applist_, toollist_, touchtest_, calc_,
                         chat_, music_, kbd_, novel_, alarm_, playlist_page_};
@@ -363,17 +373,24 @@ void FoxyUI::BuildHome() {
     });
     lv_anim_start(&bob);
     clock_label_ = MakeLabel(home_, "--:--", 0xF2F2F5);
-    lv_obj_set_pos(clock_label_, 150, 22);
+    lv_obj_set_pos(clock_label_, 148, 18);
+    SetLabelFont(clock_label_, font20_);
 
     date_label_ = MakeLabel(home_, "----/--/--", kTextDim);
-    lv_obj_set_pos(date_label_, 150, 54);
+    lv_obj_set_pos(date_label_, 150, 50);
+    SetLabelFont(date_label_, font14_);
 
-    lv_obj_t* msg_card = MakeCard(home_, 136, 86, 172, 132);
+    lv_obj_t* msg_title = MakeLabel(home_, "消息", 0x8A8A92);
+    lv_obj_set_pos(msg_title, 140, 68);
+    SetLabelFont(msg_title, font14_);
+    lv_obj_t* msg_card = MakeCard(home_, 136, 88, 172, 104);
     for (int i = 0; i < 3; i++) {
-        msg_labels_[i] = MakeLabel(msg_card, i == 0 ? "暂无新消息" : "", i == 0 ? kTextDim : 0xE0E0E6);
+        msg_labels_[i] = MakeLabel(msg_card, i == 0 ? "暂无新消息" : "", i == 0 ? 0xA8A8B2 : 0xE8E8EE);
         lv_label_set_long_mode(msg_labels_[i], LV_LABEL_LONG_CLIP);
+        lv_obj_set_style_text_font(msg_labels_[i], font14_ != nullptr ? font14_ : lv_obj_get_style_text_font(msg_card, LV_PART_MAIN), 0);
         lv_obj_set_width(msg_labels_[i], 158);
         lv_obj_set_pos(msg_labels_[i], 0, 2 + i * 30);
+
     }
     UpdateClock();
 }
@@ -452,34 +469,41 @@ void FoxyUI::BuildSettings() {
     lv_obj_t* title = MakeLabel(settings_, "设置", 0xF2F2F5);
     lv_obj_set_pos(title, 14, 12);
 
+    lv_obj_t* vol_card = MakeCard(settings_, 12, 38, 296, 64);
+    lv_obj_set_style_radius(vol_card, 16, 0);
+    lv_obj_clear_flag(vol_card, LV_OBJ_FLAG_CLICKABLE);
     // 音量：标题行在滑条上方，数值直接写在标签里，避免和轨道压字
-    vol_label_ = MakeLabel(settings_, "音量 0", 0xF2F2F5);
-    lv_obj_set_pos(vol_label_, 14, 44);
-    vol_track_ = MakeCard(settings_, 14, 70, 292, 16);
+    vol_label_ = MakeLabel(vol_card, "音量 0", 0xF2F2F5);
+    lv_obj_set_pos(vol_label_, 16, 8);
+    vol_track_ = MakeCard(vol_card, 16, 36, 264, 16);
     lv_obj_set_style_radius(vol_track_, 8, 0);
     lv_obj_set_style_bg_color(vol_track_, lv_color_hex(0x484848), 0);
-    vol_fill_ = MakeCard(settings_, 14, 70, 0, 16);
+    vol_fill_ = MakeCard(vol_card, 16, 36, 0, 16);
     lv_obj_set_style_radius(vol_fill_, 8, 0);
     lv_obj_set_style_bg_color(vol_fill_, lv_color_hex(0xFFFFFF), 0);
-    vol_knob_ = MakeCard(settings_, 14, 66, 12, 24);
+    vol_knob_ = MakeCard(vol_card, 16, 32, 12, 24);
     lv_obj_set_style_radius(vol_knob_, 6, 0);
     lv_obj_set_style_bg_color(vol_knob_, lv_color_hex(kAccent), 0);
 
     // 亮度
-    bri_label_ = MakeLabel(settings_, "亮度 100", 0xF2F2F5);
-    lv_obj_set_pos(bri_label_, 14, 108);
-    bri_track_ = MakeCard(settings_, 14, 134, 292, 16);
+    lv_obj_t* bri_card = MakeCard(settings_, 12, 108, 296, 60);
+    lv_obj_set_style_radius(bri_card, 16, 0);
+    lv_obj_clear_flag(bri_card, LV_OBJ_FLAG_CLICKABLE);
+    bri_label_ = MakeLabel(bri_card, "亮度 100", 0xF2F2F5);
+    lv_obj_set_pos(bri_label_, 16, 8);
+    bri_track_ = MakeCard(bri_card, 16, 36, 264, 16);
     lv_obj_set_style_radius(bri_track_, 8, 0);
     lv_obj_set_style_bg_color(bri_track_, lv_color_hex(0x484848), 0);
-    bri_fill_ = MakeCard(settings_, 14, 134, 0, 16);
+    bri_fill_ = MakeCard(bri_card, 16, 36, 0, 16);
     lv_obj_set_style_radius(bri_fill_, 8, 0);
     lv_obj_set_style_bg_color(bri_fill_, lv_color_hex(0xFFFFFF), 0);
-    bri_knob_ = MakeCard(settings_, 14, 130, 12, 24);
+    bri_knob_ = MakeCard(bri_card, 16, 32, 12, 24);
     lv_obj_set_style_radius(bri_knob_, 6, 0);
     lv_obj_set_style_bg_color(bri_knob_, lv_color_hex(0xFFFFFF), 0);
 
-    info_label_ = MakeLabel(settings_, "读取中…", kTextDim);
-    lv_obj_set_pos(info_label_, 14, 166);
+    info_label_ = MakeLabel(settings_, "读取中…", 0x8A8A92);
+    lv_obj_set_pos(info_label_, 14, 182);
+    lv_obj_set_style_text_line_space(info_label_, 6, 0);
     lv_obj_set_style_text_line_space(info_label_, 2, 0);
 
     PlaceKnob(vol_track_, vol_knob_, volume_);
@@ -546,12 +570,12 @@ void FoxyUI::BuildCalculator() {
     lv_obj_t* title = MakeLabel(calc_, "计算器", 0xF2F2F5);
     lv_obj_set_pos(title, 14, 12);
 
-    lv_obj_t* display = MakeCard(calc_, 4, 40, 312, 34);
-    lv_obj_set_style_radius(display, 8, 0);
+    lv_obj_t* display = MakeCard(calc_, 3, 40, 314, 40);
+    lv_obj_set_style_radius(display, 12, 0);
     calc_label_ = MakeLabel(display, "0", 0xF2F2F5);
-    lv_obj_set_width(calc_label_, 300);
-    lv_label_set_long_mode(calc_label_, LV_LABEL_LONG_CLIP);
-    lv_obj_align(calc_label_, LV_ALIGN_RIGHT_MID, -4, 0);
+    lv_obj_set_width(calc_label_, LV_SIZE_CONTENT);
+    lv_obj_align(calc_label_, LV_ALIGN_RIGHT_MID, -14, 0);
+    if (font20_ != nullptr) lv_obj_set_style_text_font(calc_label_, font20_, 0);
 
     // 4 列 × 4 行键盘，键宽 76、高 38
     const char* keys[16] = {"7", "8", "9", "÷", "4", "5", "6", "×",
@@ -579,8 +603,17 @@ void FoxyUI::BuildCalculator() {
 }
 
 void FoxyUI::BuildChat() {
-    chat_status_ = MakeLabel(chat_, "我在听", kTextDim);
-    lv_obj_set_pos(chat_status_, 14, 12);
+    lv_obj_t* pill = lv_obj_create(chat_);
+    lv_obj_remove_style_all(pill);
+    lv_obj_set_pos(pill, 12, 10);
+    lv_obj_set_size(pill, 92, 26);
+    lv_obj_set_style_bg_color(pill, lv_color_hex(0x262626), 0);
+    lv_obj_set_style_bg_opa(pill, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(pill, 13, 0);
+    lv_obj_clear_flag(pill, LV_OBJ_FLAG_CLICKABLE);
+    chat_status_ = MakeLabel(pill, "我在听", 0xCCCCCC);
+    lv_obj_center(chat_status_);
+    SetLabelFont(chat_status_, font14_);
 
     if (g_chat_dsc.data == nullptr) {
         g_chat_dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
@@ -593,13 +626,13 @@ void FoxyUI::BuildChat() {
     }
     chat_art_ = lv_image_create(chat_);
     lv_image_set_src(chat_art_, &g_chat_dsc);
-    lv_obj_set_pos(chat_art_, (kScreenW - kChatW) / 2, 8);
+    lv_obj_set_pos(chat_art_, (kScreenW - kChatW) / 2, 40);
     lv_obj_clear_flag(chat_art_, LV_OBJ_FLAG_CLICKABLE);
 
     // 字幕：三行，居中，长文本自动换行
     chat_text_ = MakeLabel(chat_, "按住屏幕说句话，或者从左下角打字喵", 0xF2F2F5);
     lv_obj_set_width(chat_text_, 296);
-    lv_obj_set_pos(chat_text_, 12, 140);
+    lv_obj_set_pos(chat_text_, 12, 172);
     lv_label_set_long_mode(chat_text_, LV_LABEL_LONG_WRAP);
     lv_obj_set_style_text_align(chat_text_, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_line_space(chat_text_, 4, 0);
@@ -634,7 +667,7 @@ void FoxyUI::BuildMusic() {
     constexpr int kPanelY = 168;
     music_cover_ = lv_image_create(music_);
     lv_obj_remove_style_all(music_cover_);
-    lv_obj_set_pos(music_cover_, (kScreenW - kCoverSize) / 2, 0);
+    lv_obj_set_pos(music_cover_, (kScreenW - kCoverSize) / 2, 6);
     lv_obj_set_size(music_cover_, kCoverSize, kCoverSize);
     lv_obj_set_style_radius(music_cover_, 18, 0);
     lv_obj_set_style_clip_corner(music_cover_, true, 0);
@@ -1629,7 +1662,11 @@ void FoxyUI::PlaceKnob(lv_obj_t* track, lv_obj_t* knob, int value) {
     int knob_w = lv_obj_get_width(knob);
     int width = (area.x2 - area.x1 + 1) - knob_w;
     int clamped = value < 0 ? 0 : (value > 100 ? 100 : value);
-    lv_obj_set_x(knob, area.x1 + (clamped * width) / 100);
+    // track 现在挂在卡片里，set_x 是相对父对象；用父对象坐标换算，避免旋钮跑到卡片外
+    lv_area_t parent_area;
+    lv_obj_get_coords(lv_obj_get_parent(knob), &parent_area);
+    int rel_x = area.x1 - parent_area.x1 + (clamped * width) / 100;
+    lv_obj_set_x(knob, rel_x);
     // 已经走过的那一段填白，扫一眼就知道大概多少
     lv_obj_t* fill = (knob == vol_knob_) ? vol_fill_ : bri_fill_;
     if (fill != nullptr) {
@@ -1796,18 +1833,19 @@ void FoxyUI::BuildKeyboard() {
     lv_obj_remove_style_all(kbd_panel_);
     lv_obj_set_pos(kbd_panel_, 0, 0);
     lv_obj_set_size(kbd_panel_, kScreenW, 56);
-    lv_obj_set_style_bg_color(kbd_panel_, lv_color_hex(0x1B1B24), 0);
+    lv_obj_set_style_bg_color(kbd_panel_, lv_color_hex(0x141414), 0);
     lv_obj_set_style_bg_opa(kbd_panel_, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(kbd_panel_, 0, 0);
     lv_obj_clear_flag(kbd_panel_, LV_OBJ_FLAG_CLICKABLE);
 
-    kbd_text_label_ = MakeLabel(kbd_panel_, "点字母开始输入", kTextDim);
-    lv_obj_set_pos(kbd_text_label_, 10, 8);
+    kbd_text_label_ = MakeLabel(kbd_panel_, "点字母开始输入", 0xF2F2F5);
+    lv_obj_set_pos(kbd_text_label_, 12, 6);
     lv_obj_set_width(kbd_text_label_, 300);
     lv_label_set_long_mode(kbd_text_label_, LV_LABEL_LONG_CLIP);
 
-    lv_obj_t* hint = MakeLabel(kbd_panel_, "右滑退出 · 发送后自动开聊", kTextDim);
-    lv_obj_set_pos(hint, 10, 32);
+    lv_obj_t* hint = MakeLabel(kbd_panel_, "右滑退出 · 发送后自动开聊", 0x8A8A92);
+    lv_obj_set_pos(hint, 12, 30);
+    SetLabelFont(hint, font14_);
 
     kbd_key_count_ = 0;
     const char* rows_letters[] = {"1234567890", "qwertyuiop", "asdfghjkl"};
@@ -2134,19 +2172,23 @@ void FoxyUI::BuildAlarm() {
     alarm_ = MakePage(lv_screen_active());
     lv_obj_t* header = lv_label_create(alarm_);
     lv_label_set_text(header, "闹钟");
-    lv_obj_set_style_text_color(header, lv_color_hex(kAccent), 0);
+    lv_obj_set_style_text_color(header, lv_color_hex(0xF2F2F5), 0);
     lv_obj_set_pos(header, 14, 12);
 
     lv_obj_t* hint = lv_label_create(alarm_);
     lv_label_set_text(hint, "说：十分钟后叫我");
-    lv_obj_set_style_text_color(hint, lv_color_hex(kTextDim), 0);
-    lv_obj_set_pos(hint, 14, 44);
+    lv_obj_set_style_text_color(hint, lv_color_hex(0x8A8A92), 0);
+    lv_obj_set_pos(hint, 14, 38);
+    SetLabelFont(hint, font14_);
 
-    alarm_list_ = lv_label_create(alarm_);
+    lv_obj_t* card = MakeCard(alarm_, 12, 66, 296, 118);
+    lv_obj_set_style_radius(card, 16, 0);
+    lv_obj_clear_flag(card, LV_OBJ_FLAG_CLICKABLE);
+    alarm_list_ = lv_label_create(card);
     lv_label_set_text(alarm_list_, "读取中…");
     lv_label_set_long_mode(alarm_list_, LV_LABEL_LONG_WRAP);
-    lv_obj_set_width(alarm_list_, 292);
-    lv_obj_set_pos(alarm_list_, 14, 80);
+    lv_obj_set_width(alarm_list_, 264);
+    lv_obj_set_pos(alarm_list_, 16, 14);
     lv_obj_set_style_text_color(alarm_list_, lv_color_hex(0xF2F2F5), 0);
     lv_obj_set_style_text_line_space(alarm_list_, 6, 0);
 }
