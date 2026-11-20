@@ -83,6 +83,9 @@ void CoreS3LcdDisplay::SetChatMessage(const char* role, const char* content) {
         text = "待命中，说 Hi ESP 或点屏幕叫我都行";
     }
     FoxyUI::Get().SetChatText(text);
+    // 原生那层（状态栏/表情/字幕）永远藏起来：TTS 说话时基类会把它重新显示，
+    // 结果就是"音乐页上冒出一行对话文字"，这里每次都按回去。
+    SetChatVisible(false);
 }
 
 void CoreS3LcdDisplay::SetChatVisible(bool visible) {

@@ -49,7 +49,8 @@ constexpr int kPageMusic = 8;     // 音乐
 constexpr int kPageKeyboard = 9;  // 屏幕键盘
 constexpr int kPageNovel = 10;    // 小说
 constexpr int kPageAlarm = 11;    // 闹钟
-constexpr int kPageCount = 12;
+constexpr int kPagePlaylist = 12;  // 歌单
+constexpr int kPageCount = 13;
 
 // 二级列表页的网格参数（顶部留出返回键的位置）
 constexpr int kListTop = 40;
@@ -238,6 +239,7 @@ void FoxyUI::Init(CoreS3LcdDisplay* display) {
     BuildTouchTest();
     BuildCalculator();
     BuildMusic();
+    BuildPlaylist();
     BuildKeyboard();
     BuildNovel();
     BuildAlarm();
@@ -518,7 +520,7 @@ void FoxyUI::BuildMusic() {
     lv_obj_set_pos(music_panel_, 0, 148);
     lv_obj_set_size(music_panel_, kScreenW, kScreenH - 148);
     lv_obj_set_style_bg_color(music_panel_, lv_color_hex(0x0B0B10), 0);
-    lv_obj_set_style_bg_opa(music_panel_, 208, 0);
+    lv_obj_set_style_bg_opa(music_panel_, 245, 0);
     lv_obj_clear_flag(music_panel_, LV_OBJ_FLAG_CLICKABLE);
 
     music_title_ = MakeLabel(music_panel_, "-", 0xF2F2F5);
@@ -573,13 +575,13 @@ void FoxyUI::BuildMusic() {
         lv_obj_center(label);
         return btn;
     };
-    music_btn_prev_ = make_round(74, "上");
-    music_play_ = make_round(137, "播");
+    music_btn_prev_ = make_round(74, "<<");
+    music_play_ = make_round(137, "▶");
     lv_obj_t* play_label = lv_obj_get_child(music_play_, 0);
     if (play_label != nullptr) {
-        lv_label_set_text(play_label, "播");
+        lv_label_set_text(play_label, "\u25b6");
     }
-    music_btn_next_ = make_round(200, "下");
+    music_btn_next_ = make_round(200, ">>");
 
     // 歌词浮层：盖住封面区域，点任意处返回封面
     lyrics_panel_ = lv_obj_create(music_);
@@ -608,7 +610,13 @@ void FoxyUI::ToggleLyrics() {
     }
     if (lyrics_visible_) {
         lv_obj_clear_flag(lyrics_panel_, LV_OBJ_FLAG_HIDDEN);
-        UpdateLyrics();
+        lv_obj_move_foreground(lyrics_panel_);  // 必须置顶，否则被封面盖住
+        if (lyrics_empty_) {
+            lv_label_set_text(lyric_labels_[0], "这首没有歌词");
+            lv_obj_set_style_text_color(lyric_labels_[0], lv_color_hex(kTextDim), 0);
+        } else {
+            UpdateLyrics();
+        }
     } else {
         lv_obj_add_flag(lyrics_panel_, LV_OBJ_FLAG_HIDDEN);
     }
@@ -619,9 +627,26 @@ void FoxyUI::UpdateLyrics() {
         return;
     }
     auto& music = FoxyMusic::Get();
+    DisplayLockGuard lock(display_);
+    // 没有 .lrc 的曲子说清楚，别让歌词页空着像坏了
+    if (lyrics_empty_ || music.LyricAt(0).empty()) {
+        if (lyric_labels_[0] != nullptr) {
+            lv_label_set_long_mode(lyric_labels_[0], LV_LABEL_LONG_WRAP);
+            lv_obj_set_style_text_align(lyric_labels_[0], LV_TEXT_ALIGN_CENTER, 0);
+            lv_obj_set_style_text_line_space(lyric_labels_[0], 8, 0);
+            lv_obj_set_pos(lyric_labels_[0], 14, 34);
+            lv_obj_set_style_text_color(lyric_labels_[0], lv_color_hex(kTextDim), 0);
+            lv_label_set_text(lyric_labels_[0], "这首没有歌词\n\n把同名 .lrc 放进 music 目录");
+        }
+        for (int i = 1; i < 5; i++) {
+            if (lyric_labels_[i] != nullptr) {
+                lv_label_set_text(lyric_labels_[i], "");
+            }
+        }
+        return;
+    }
     int elapsed_ms = music.ElapsedSeconds() * 1000;
     std::string current = music.LyricAt(elapsed_ms);
-    DisplayLockGuard lock(display_);
     // 只显示"当前句"附近：当前句高亮，其它留空——比滚动歌词省心，也够看
     for (int i = 0; i < 5; i++) {
         if (lyric_labels_[i] == nullptr) {
@@ -663,7 +688,7 @@ void FoxyUI::LoadMusicAssets(int index) {
     if (index < 0) {
         return;
     }
-    FoxyMusic::Get().LoadLyrics(index);
+    lyrics_empty_ = !FoxyMusic::Get().LoadLyrics(index);
     if (music_cover_ == nullptr) {
         return;
     }
@@ -714,7 +739,7 @@ void FoxyUI::UpdateMusicPage() {
     snprintf(time_text, sizeof(time_text), "%d:%02d / %d:%02d", elapsed / 60, elapsed % 60,
              duration / 60000, (duration / 1000) % 60);
 
-    const char* play_text = music.IsPlaying() && !music.IsPaused() ? "停" : "播";
+    const char* play_text = music.IsPlaying() && !music.IsPaused() ? "||" : "\u25b6";
 
     {
         DisplayLockGuard lock(display_);
@@ -756,6 +781,12 @@ void FoxyUI::HandleMusicCommand(const std::string& action, int index) {
         music.Next();
     } else if (action == "prev") {
         music.Prev();
+    } else if (action == "lyrics") {
+        ToggleLyrics();
+        return;
+    } else if (action == "playlist") {
+        TogglePlaylist();
+        return;
     } else if (action == "refresh") {
         music.Refresh();
         if (page_ == kPageMusic) {
@@ -785,6 +816,20 @@ void FoxyUI::MusicRefreshTask(void* arg) {
 
 bool FoxyUI::HandleMusicTap(int x, int y) {
     auto& music = FoxyMusic::Get();
+
+    if (page_ == kPagePlaylist) {
+        // 60px 起每行 34px，点中第几行就播第几首
+        int row = (y - 60) / 34;
+        if (y >= 48 && row >= 0 && row < music.TrackCount() && row < 5) {
+            music.Play(row);
+            xTaskCreate(MusicAssetTask, "music_asset", 6144,
+                        reinterpret_cast<void*>(static_cast<intptr_t>(row)), 3, nullptr);
+            UpdateMusicPage();
+            return true;
+        }
+        SetPage(kPageMusic);
+        return true;
+    }
 
     if (lyrics_visible_) {
         ToggleLyrics();
@@ -935,7 +980,8 @@ void FoxyUI::SetPage(int page) {
         display_->SetChatVisible(false);
     }
 
-    lv_obj_t* pages[] = {home_, apps_, settings_, applist_, toollist_, touchtest_, calc_, music_, chat_, kbd_, novel_, alarm_};
+    lv_obj_t* pages[] = {home_, apps_, settings_, applist_, toollist_, touchtest_, calc_, music_,
+                         chat_, kbd_, novel_, alarm_, playlist_page_};
     for (lv_obj_t* p : pages) {
         if (p != nullptr) {
             lv_obj_add_flag(p, LV_OBJ_FLAG_HIDDEN);
@@ -1023,6 +1069,10 @@ void FoxyUI::SetPage(int page) {
             target = alarm_;
             AlarmFetch();
             break;
+        case kPagePlaylist:
+            target = playlist_page_;
+            UpdatePlaylistText();
+            break;
         case kPageChat:
             target = chat_;
             break;
@@ -1096,6 +1146,9 @@ void FoxyUI::GoBack() {
         case kPageNovel:
         case kPageAlarm:
             SetPage(kPageAppList);
+            break;
+        case kPagePlaylist:
+            SetPage(kPageMusic);
             break;
         default:
             // 兜底：任何没显式登记的页面都退回应用页，绝不让用户卡在某一页出不来。
@@ -1172,6 +1225,16 @@ bool FoxyUI::OnRelease(int x, int y, bool short_tap) {
     // 滑动判定收紧：至少 80px、横向位移是纵向的两倍以上，才当翻页/返回。
     // 这样"点一下"或者"轻轻蹭一下"都不会再整页滑走。
     if (adx >= kSwipeThreshold && adx > ady * 2) {
+        if (page_ == kPageMusic && ady >= 50 && ady > adx) {
+            // 音乐页下滑 = 打开歌单
+            SetPage(kPagePlaylist);
+            return true;
+        }
+        if (page_ == kPagePlaylist && ady >= 50 && ady > adx) {
+            // 歌单页下滑 / 上滑都收起
+            SetPage(kPageMusic);
+            return true;
+        }
         if (page_ == kPageNovel) {
             // 小说页左右滑动是翻页；已经在第一页还往右滑，那就是想退出去。
             if (dx > 0 && novel_page_ <= 0) {
@@ -1952,6 +2015,69 @@ void FoxyUI::AlarmFetch() {
     }
     cJSON_Delete(root);
     SetAlarmText(lines);
+}
+
+
+
+
+void FoxyUI::BuildPlaylist() {
+    // 歌单做成独立的一页（浮层那套在这块屏上一直画不出来，换页最稳）
+    playlist_page_ = MakePage(lv_screen_active());
+
+    lv_obj_t* title = MakeLabel(playlist_page_, "歌单", 0xE8A33D);
+    lv_obj_set_pos(title, 14, 10);
+    lv_obj_t* hint = MakeLabel(playlist_page_, "点一首播放 · 下滑收起", kTextDim);
+    lv_obj_set_pos(hint, 14, 34);
+
+    for (int i = 0; i < 5; i++) {
+        lv_obj_t* cell = MakeCard(playlist_page_, 12, 60 + i * 34, 296, 28);
+        playlist_rows_[i] = MakeLabel(cell, "", 0xF2F2F5);
+        lv_obj_set_width(playlist_rows_[i], 280);
+        lv_label_set_long_mode(playlist_rows_[i], LV_LABEL_LONG_CLIP);
+        lv_obj_align(playlist_rows_[i], LV_ALIGN_LEFT_MID, 8, 0);
+        lv_obj_add_flag(cell, LV_OBJ_FLAG_HIDDEN);
+        playlist_cells_[i] = cell;
+    }
+}
+
+void FoxyUI::TogglePlaylist() {
+    if (page_ == kPageMusic) {
+        SetPage(kPagePlaylist);
+    } else if (page_ == kPagePlaylist) {
+        SetPage(kPageMusic);
+    }
+}
+
+void FoxyUI::UpdatePlaylistText() {
+    auto& music = FoxyMusic::Get();
+    int count = music.TrackCount();
+    if (count > 5) {
+        count = 5;
+    }
+    DisplayLockGuard lock(display_);
+    for (int i = 0; i < 5; i++) {
+        if (playlist_cells_[i] == nullptr || playlist_rows_[i] == nullptr) {
+            continue;
+        }
+        if (i >= count) {
+            lv_obj_add_flag(playlist_cells_[i], LV_OBJ_FLAG_HIDDEN);
+            continue;
+        }
+        lv_obj_clear_flag(playlist_cells_[i], LV_OBJ_FLAG_HIDDEN);
+        std::string name = music.TrackName(i);
+        if (name.size() > 4 && name.compare(name.size() - 4, 4, ".mp3") == 0) {
+            name = name.substr(0, name.size() - 4);
+        }
+        if (name.size() > 24) {
+            name = name.substr(0, 24) + "…";
+        }
+        char line[96];
+        snprintf(line, sizeof(line), "%s%d  %s", (i == music.CurrentIndex()) ? "▶ " : "", i + 1,
+                 name.c_str());
+        lv_label_set_text(playlist_rows_[i], line);
+        lv_obj_set_style_text_color(playlist_rows_[i],
+                                    lv_color_hex(i == music.CurrentIndex() ? 0xE8A33D : 0xF2F2F5), 0);
+    }
 }
 
 

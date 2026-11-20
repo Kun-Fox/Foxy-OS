@@ -38,6 +38,9 @@ private:
     void BuildTouchTest();
     void BuildCalculator();
     void BuildMusic();
+    void BuildPlaylist();
+    void TogglePlaylist();
+    void UpdatePlaylistText();
     void BuildChat();
     void BuildKeyboard();
     void BuildNovel();
@@ -109,6 +112,10 @@ private:
     lv_obj_t* music_track_ = nullptr;
     lv_obj_t* music_fill_ = nullptr;
     lv_obj_t* music_knob_ = nullptr;
+    lv_obj_t* playlist_page_ = nullptr;
+    lv_obj_t* playlist_rows_[5] = {nullptr};
+    lv_obj_t* playlist_cells_[5] = {nullptr};
+    bool lyrics_empty_ = false;
     lv_obj_t* music_btn_prev_ = nullptr;
     lv_obj_t* music_btn_next_ = nullptr;
     lv_obj_t* lyrics_panel_ = nullptr;
@@ -175,6 +182,7 @@ private:
     int volume_ = 0;
     int brightness_ = 100;
 };
+
 
 
 
