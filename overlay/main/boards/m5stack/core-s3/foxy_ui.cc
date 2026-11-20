@@ -145,6 +145,15 @@ static void ToastDeleteCb(lv_timer_t* t) {
 }
 
 // 轻提示：底部浮一条 1.2 秒后自动消失的小胶囊
+// 二级页底部提示：这块屏没有返回键，靠右滑，得让人知道
+static void AddBackHint(lv_obj_t* page) {
+    if (page == nullptr) return;
+    lv_obj_t* hint = lv_label_create(page);
+    lv_label_set_text(hint, "右滑返回");
+    lv_obj_set_style_text_color(hint, lv_color_hex(0x6E6E78), 0);
+    lv_obj_align(hint, LV_ALIGN_TOP_RIGHT, -14, 16);
+    lv_obj_clear_flag(hint, LV_OBJ_FLAG_CLICKABLE);
+}
 static void ShowToast(lv_obj_t* parent, const char* text) {
     if (parent == nullptr) {
         return;
@@ -570,6 +579,7 @@ void FoxyUI::BuildSettings() {
     PlaceKnob(vol_track_, vol_knob_, volume_);
     PlaceKnob(bri_track_, bri_knob_, brightness_);
     UpdateSettingsInfo();
+    AddBackHint(settings_);
 }
 
 void FoxyUI::BuildAppList() {
@@ -585,6 +595,7 @@ void FoxyUI::BuildAppList() {
         lv_obj_t* chevron = MakeLabel(row, ">", 0x9A9AA2);
         lv_obj_align(chevron, LV_ALIGN_RIGHT_MID, -16, 0);
     }
+    AddBackHint(applist_);
 }
 
 void FoxyUI::BuildToolList() {
@@ -600,14 +611,21 @@ void FoxyUI::BuildToolList() {
         lv_obj_t* chevron = MakeLabel(row, ">", 0x9A9AA2);
         lv_obj_align(chevron, LV_ALIGN_RIGHT_MID, -16, 0);
     }
+    AddBackHint(toollist_);
 }
 
 void FoxyUI::BuildTouchTest() {
     back_touch_ = nullptr;  // 返回键已取消：二级页统一用滑动返回
-    touch_label_ = MakeLabel(touchtest_, "触摸测试\n按下屏幕任意位置", 0xF2F2F5);
-    lv_obj_set_pos(touch_label_, 14, 44);
-    lv_obj_set_style_text_line_space(touch_label_, 8, 0);
-    touch_dot_ = MakeCard(touchtest_, 156, 120, 16, 16);
+    lv_obj_t* title = MakeLabel(touchtest_, "触摸测试", 0xF2F2F5);
+    lv_obj_set_pos(title, 14, 12);
+    lv_obj_t* hint = MakeLabel(touchtest_, "按下屏幕任意位置，坐标会显示在这里", 0x8A8A92);
+    lv_obj_set_pos(hint, 14, 40);
+    SetLabelFont(hint, font14_);
+    lv_obj_t* card = MakeCard(touchtest_, 12, 76, 296, 96);
+    touch_label_ = MakeLabel(card, "x ---   y ---", 0xF2F2F5);
+    lv_obj_center(touch_label_);
+    SetLabelFont(touch_label_, font20_);
+    touch_dot_ = MakeCard(touchtest_, 156, 190, 10, 10);
     lv_obj_set_style_radius(touch_dot_, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_color(touch_dot_, lv_color_hex(kAccent), 0);
     lv_obj_add_flag(touch_dot_, LV_OBJ_FLAG_HIDDEN);
@@ -617,12 +635,14 @@ void FoxyUI::UpdateTouchTest(int x, int y) {
     DisplayLockGuard lock(display_);
     if (touch_label_ != nullptr) {
         char buffer[64];
-        snprintf(buffer, sizeof(buffer), "触摸测试\nx=%d  y=%d", x, y);
+        snprintf(buffer, sizeof(buffer), "x %d   y %d", x, y);
         lv_label_set_text(touch_label_, buffer);
     }
     if (touch_dot_ != nullptr) {
         lv_obj_clear_flag(touch_dot_, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_set_pos(touch_dot_, x - 8, y - 8);
+        int dot_x = 12 + x * 296 / 320;
+        int dot_y = 190 + y * 40 / 240;
+        lv_obj_set_pos(touch_dot_, dot_x - 5, dot_y - 5);
     }
 }
 
@@ -693,7 +713,7 @@ void FoxyUI::BuildChat() {
     // 字幕：三行，居中，长文本自动换行
     chat_text_ = MakeLabel(chat_, "按住屏幕说句话，或者从左下角打字喵", 0xF2F2F5);
     lv_obj_set_width(chat_text_, 296);
-    lv_obj_set_pos(chat_text_, 16, 168);
+    lv_obj_set_pos(chat_text_, 16, 176);
     lv_label_set_long_mode(chat_text_, LV_LABEL_LONG_WRAP);
     lv_obj_set_style_text_align(chat_text_, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_line_space(chat_text_, 8, 0);
@@ -713,6 +733,17 @@ void FoxyUI::SetChatText(const std::string& text) {
         shown = shown.substr(0, 120) + "…";
     }
     lv_label_set_text(chat_text_, shown.c_str());
+    // 字幕出现时淡入，换句不生硬
+    lv_obj_set_style_opa(chat_text_, LV_OPA_30, 0);
+    lv_anim_t fade;
+    lv_anim_init(&fade);
+    lv_anim_set_var(&fade, chat_text_);
+    lv_anim_set_values(&fade, LV_OPA_30, LV_OPA_COVER);
+    lv_anim_set_duration(&fade, 180);
+    lv_anim_set_exec_cb(&fade, [](void* var, int32_t v) {
+        lv_obj_set_style_opa(static_cast<lv_obj_t*>(var), static_cast<lv_opa_t>(v), 0);
+    });
+    lv_anim_start(&fade);
 }
 
 void FoxyUI::SetChatStatus(const std::string& status) {
@@ -751,7 +782,7 @@ void FoxyUI::BuildMusic() {
     lv_label_set_long_mode(music_title_, LV_LABEL_LONG_DOT);
     lv_obj_set_pos(music_title_, 16, 4);
 
-    music_time_ = MakeLabel(music_panel_, "0:00 / 0:00", kTextDim);
+    music_time_ = MakeLabel(music_panel_, "0:00 / 0:00", 0xB0B0BA);
     lv_obj_set_pos(music_time_, 200, 5);
     lv_obj_set_width(music_time_, 104);
     lv_obj_set_style_text_align(music_time_, LV_TEXT_ALIGN_RIGHT, 0);
@@ -2190,6 +2221,16 @@ void FoxyUI::SetNovelText(const std::string& title, int page, int pages, const s
     }
     if (novel_body_ != nullptr) {
         lv_label_set_text(novel_body_, text.c_str());
+    lv_obj_set_style_opa(novel_body_, LV_OPA_30, 0);
+    lv_anim_t nfade;
+    lv_anim_init(&nfade);
+    lv_anim_set_var(&nfade, novel_body_);
+    lv_anim_set_values(&nfade, LV_OPA_30, LV_OPA_COVER);
+    lv_anim_set_duration(&nfade, 160);
+    lv_anim_set_exec_cb(&nfade, [](void* var, int32_t v) {
+        lv_obj_set_style_opa(static_cast<lv_obj_t*>(var), static_cast<lv_opa_t>(v), 0);
+    });
+    lv_anim_start(&nfade);
     }
     if (novel_foot_ != nullptr) {
         char foot[32];
@@ -2267,6 +2308,7 @@ void FoxyUI::BuildAlarm() {
     lv_obj_set_pos(alarm_list_, 16, 14);
     lv_obj_set_style_text_color(alarm_list_, lv_color_hex(0xF2F2F5), 0);
     lv_obj_set_style_text_line_space(alarm_list_, 6, 0);
+    AddBackHint(alarm_);
 }
 
 void FoxyUI::SetAlarmText(const std::string& text) {
@@ -2315,7 +2357,7 @@ void FoxyUI::AlarmFetch() {
     cJSON* list = cJSON_GetObjectItem(root, "alarms");
     int count = cJSON_GetArraySize(list);
     if (count == 0) {
-        lines = "暂时没有闹钟。\n说一句「三分钟后叫我」就行。";
+        lines = "暂时没有闹钟\n说一句「三分钟后叫我」就行";
     } else {
         for (int i = 0; i < count && i < 5; i++) {
             cJSON* item = cJSON_GetArrayItem(list, i);
