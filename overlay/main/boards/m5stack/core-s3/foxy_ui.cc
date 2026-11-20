@@ -35,7 +35,7 @@ constexpr int kStatusH = 0;                          // 不再保留状态栏，
 constexpr int kPageH = kScreenH - kStatusH;          // 240，无栏铺满整屏
 constexpr int kSwipeThreshold = 80;
 // 小于这个位移算点击；介于它和滑动阈值之间算误触（交给滑条拖动）
-constexpr int kTapMaxMove = 18;
+constexpr int kTapMaxMove = 36;
 // 页面语义：0 首页，1 应用页，2 设置页，3 = 基类对话界面（不画我们的层）
 constexpr int kPageHome = 0;
 constexpr int kPageApps = 1;
@@ -816,6 +816,7 @@ void FoxyUI::MusicRefreshTask(void* arg) {
 
 bool FoxyUI::HandleMusicTap(int x, int y) {
     auto& music = FoxyMusic::Get();
+    ESP_LOGI(TAG, "music tap x=%d y=%d playing=%d", x, y, (int)music.IsPlaying());
 
     if (page_ == kPagePlaylist) {
         // 60px 起每行 34px，点中第几行就播第几首
@@ -1254,6 +1255,30 @@ bool FoxyUI::OnRelease(int x, int y, bool short_tap) {
             SetPage(kPageHome);
         } else if (page_ != kPageHome) {
             GoBack();
+        }
+        return true;
+    }
+    // 音乐页/歌单页在判定"误触忽略"之前就先处理：
+    // 手指在 2 寸屏上按圆按钮经常带十几二十像素的位移，不能因此当成误触丢掉。
+    if (page_ == kPageMusic) {
+        if (ady >= 50 && ady > adx) {
+            SetPage(kPagePlaylist);
+            return true;
+        }
+        return HandleMusicTap(x, y);
+    }
+    if (page_ == kPagePlaylist) {
+        if (ady >= 50 && ady > adx) {
+            SetPage(kPageMusic);
+            return true;
+        }
+        int row = (y - 60) / 34;
+        if (y >= 48 && row >= 0 && row < FoxyMusic::Get().TrackCount() && row < 5) {
+            FoxyMusic::Get().Play(row);
+            SetPage(kPageMusic);
+            xTaskCreate(MusicAssetTask, "music_asset", 6144,
+                        reinterpret_cast<void*>(static_cast<intptr_t>(row)), 3, nullptr);
+            return true;
         }
         return true;
     }
@@ -2080,5 +2105,17 @@ void FoxyUI::UpdatePlaylistText() {
     }
 }
 
+
+
+
+void FoxyUI::SimulateTouch(int x1, int y1, int x2, int y2) {
+    ESP_LOGI(TAG, "simulate touch (%d,%d)->(%d,%d) page=%d", x1, y1, x2, y2, page_);
+    // 开发期入口：先按下再抬起，走和真实触摸完全相同的路径
+    OnPress(x1, y1);
+    int dx = x2 - x1;
+    int dy = y2 - y1;
+    bool short_tap = (dx > -18 && dx < 18 && dy > -18 && dy < 18);
+    OnRelease(x2, y2, short_tap);
+}
 
 

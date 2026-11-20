@@ -782,6 +782,18 @@ void Application::InitializeProtocol() {
                     });
                 }
             }
+            // Foxy: 远程注入一次点击/滑动（开发期没有手指也能测触摸路径）
+            if (cJSON_IsString(action) && strcmp(action->valuestring, "tap") == 0) {
+                auto px = cJSON_GetObjectItem(root, "x");
+                auto py = cJSON_GetObjectItem(root, "y");
+                auto py2 = cJSON_GetObjectItem(root, "y2");
+                if (cJSON_IsNumber(px) && cJSON_IsNumber(py)) {
+                    int x1 = px->valueint;
+                    int y1 = py->valueint;
+                    int y2 = cJSON_IsNumber(py2) ? py2->valueint : y1;
+                    Schedule([display, x1, y1, y2]() { display->InjectTouch(x1, y1, y2); });
+                }
+            }
             // Foxy: 远程切页（开发期看各页真实渲染）
             if (cJSON_IsString(action) && strcmp(action->valuestring, "page") == 0) {
                 auto page = cJSON_GetObjectItem(root, "page");
@@ -1619,4 +1631,5 @@ void Application::ResetProtocol() {
         protocol_.reset();
     });
 }
+
 

@@ -24,6 +24,7 @@ public:
     // 服务器推送的消息卡
     void ShowMessageCard(const std::string& text) override;
     void OnMusicCommand(const std::string& action, int index) override;
+    void InjectTouch(int x, int y, int y2) override;
 
     // 开发期截屏：把当前画面以 RGB565 原样 POST 到 url
     void UploadSnapshot(const std::string& url) override;
@@ -58,6 +59,8 @@ private:
 };
 
 #endif  // CORES3_DISPLAY_H
+
+
 
 
 

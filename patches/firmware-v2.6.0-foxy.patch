@@ -24,7 +24,7 @@ index 45204d6..01b9b3a 100644
 +
 +
 diff --git a/main/application.cc b/main/application.cc
-index 300a36c..52b393a 100644
+index 300a36c..9a3a459 100644
 --- a/main/application.cc
 +++ b/main/application.cc
 @@ -22,6 +22,10 @@
@@ -134,7 +134,7 @@ index 300a36c..52b393a 100644
                          }
                      }
                  });
-@@ -713,6 +764,49 @@ void Application::InitializeProtocol() {
+@@ -713,6 +764,61 @@ void Application::InitializeProtocol() {
                      display->SetEmotion(emotion_str.c_str());
                  });
              }
@@ -154,6 +154,18 @@ index 300a36c..52b393a 100644
 +                    Schedule([display, target = std::string(url->valuestring)]() {
 +                        display->UploadSnapshot(target);
 +                    });
++                }
++            }
++            // Foxy: 远程注入一次点击/滑动（开发期没有手指也能测触摸路径）
++            if (cJSON_IsString(action) && strcmp(action->valuestring, "tap") == 0) {
++                auto px = cJSON_GetObjectItem(root, "x");
++                auto py = cJSON_GetObjectItem(root, "y");
++                auto py2 = cJSON_GetObjectItem(root, "y2");
++                if (cJSON_IsNumber(px) && cJSON_IsNumber(py)) {
++                    int x1 = px->valueint;
++                    int y1 = py->valueint;
++                    int y2 = cJSON_IsNumber(py2) ? py2->valueint : y1;
++                    Schedule([display, x1, y1, y2]() { display->InjectTouch(x1, y1, y2); });
 +                }
 +            }
 +            // Foxy: 远程切页（开发期看各页真实渲染）
@@ -184,7 +196,7 @@ index 300a36c..52b393a 100644
          } else if (strcmp(type->valuestring, "mcp") == 0) {
              auto payload = cJSON_GetObjectItem(root, "payload");
              if (cJSON_IsObject(payload)) {
-@@ -809,6 +903,48 @@ void Application::DismissAlert() {
+@@ -809,6 +915,48 @@ void Application::DismissAlert() {
      }
  }
  
@@ -233,7 +245,7 @@ index 300a36c..52b393a 100644
  void Application::ToggleChatState() { xEventGroupSetBits(event_group_, MAIN_EVENT_TOGGLE_CHAT); }
  
  void Application::StartListening() { xEventGroupSetBits(event_group_, MAIN_EVENT_START_LISTENING); }
-@@ -1033,6 +1169,10 @@ void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
+@@ -1033,6 +1181,10 @@ void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
  void Application::HandleStateChangedEvent() {
      DeviceState new_state = state_machine_.GetState();
      clock_ticks_ = 0;
@@ -244,7 +256,7 @@ index 300a36c..52b393a 100644
      // Any state change invalidates a pending deferred listening start;
      // the Listening case below re-arms it when needed.
      pending_listening_start_ = false;
-@@ -1056,6 +1196,9 @@ void Application::HandleStateChangedEvent() {
+@@ -1056,6 +1208,9 @@ void Application::HandleStateChangedEvent() {
              }
              audio_service_.EnableVoiceProcessing(false);
              audio_service_.EnableWakeWordDetection(true);
@@ -254,7 +266,7 @@ index 300a36c..52b393a 100644
              break;
          case kDeviceStateConnecting:
              display->SetStatus(Lang::Strings::CONNECTING);
-@@ -1408,10 +1551,8 @@ bool Application::CanEnterSleepMode() {
+@@ -1408,10 +1563,8 @@ bool Application::CanEnterSleepMode() {
          return false;
      }
  
@@ -267,10 +279,11 @@ index 300a36c..52b393a 100644
      if (!audio_service_.IsIdle()) {
          return false;
      }
-@@ -1478,3 +1619,4 @@ void Application::ResetProtocol() {
+@@ -1478,3 +1631,5 @@ void Application::ResetProtocol() {
          protocol_.reset();
      });
  }
++
 +
 diff --git a/main/application.h b/main/application.h
 index 866c2a7..36d74b7 100644
@@ -335,10 +348,10 @@ index 03e2baa..b28ad6c 100644
  
 diff --git a/main/boards/m5stack/core-s3/cores3_display.cc b/main/boards/m5stack/core-s3/cores3_display.cc
 new file mode 100644
-index 0000000..a384875
+index 0000000..6582c31
 --- /dev/null
 +++ b/main/boards/m5stack/core-s3/cores3_display.cc
-@@ -0,0 +1,449 @@
+@@ -0,0 +1,454 @@
 +#include "cores3_display.h"
 +
 +#include "application.h"
@@ -446,6 +459,10 @@ index 0000000..a384875
 +
 +void CoreS3LcdDisplay::ShowMessageCard(const std::string& text) {
 +    FoxyUI::Get().PushMessage(text);
++}
++
++void CoreS3LcdDisplay::InjectTouch(int x, int y, int y2) {
++    FoxyUI::Get().SimulateTouch(x, y, x, y2);
 +}
 +
 +void CoreS3LcdDisplay::OnMusicCommand(const std::string& action, int index) {
@@ -788,12 +805,13 @@ index 0000000..a384875
 +    ESP_LOGI(TAG, "long press: back to home");
 +    FoxyUI::Get().SetPage(0);
 +}
++
 diff --git a/main/boards/m5stack/core-s3/cores3_display.h b/main/boards/m5stack/core-s3/cores3_display.h
 new file mode 100644
-index 0000000..cbef674
+index 0000000..5ecefbf
 --- /dev/null
 +++ b/main/boards/m5stack/core-s3/cores3_display.h
-@@ -0,0 +1,64 @@
+@@ -0,0 +1,67 @@
 +#ifndef CORES3_DISPLAY_H
 +#define CORES3_DISPLAY_H
 +
@@ -820,6 +838,7 @@ index 0000000..cbef674
 +    // 服务器推送的消息卡
 +    void ShowMessageCard(const std::string& text) override;
 +    void OnMusicCommand(const std::string& action, int index) override;
++    void InjectTouch(int x, int y, int y2) override;
 +
 +    // 开发期截屏：把当前画面以 RGB565 原样 POST 到 url
 +    void UploadSnapshot(const std::string& url) override;
@@ -854,6 +873,8 @@ index 0000000..cbef674
 +};
 +
 +#endif  // CORES3_DISPLAY_H
++
++
 +
 +
 +
@@ -1500,10 +1521,10 @@ index 0000000..554a746
 +#endif  // FOXY_MUSIC_H
 diff --git a/main/boards/m5stack/core-s3/foxy_ui.cc b/main/boards/m5stack/core-s3/foxy_ui.cc
 new file mode 100644
-index 0000000..37862be
+index 0000000..7bc9adb
 --- /dev/null
 +++ b/main/boards/m5stack/core-s3/foxy_ui.cc
-@@ -0,0 +1,2084 @@
+@@ -0,0 +1,2121 @@
 +#include "foxy_ui.h"
 +
 +#include "audio/audio_codec.h"
@@ -1541,7 +1562,7 @@ index 0000000..37862be
 +constexpr int kPageH = kScreenH - kStatusH;          // 240，无栏铺满整屏
 +constexpr int kSwipeThreshold = 80;
 +// 小于这个位移算点击；介于它和滑动阈值之间算误触（交给滑条拖动）
-+constexpr int kTapMaxMove = 18;
++constexpr int kTapMaxMove = 36;
 +// 页面语义：0 首页，1 应用页，2 设置页，3 = 基类对话界面（不画我们的层）
 +constexpr int kPageHome = 0;
 +constexpr int kPageApps = 1;
@@ -2322,6 +2343,7 @@ index 0000000..37862be
 +
 +bool FoxyUI::HandleMusicTap(int x, int y) {
 +    auto& music = FoxyMusic::Get();
++    ESP_LOGI(TAG, "music tap x=%d y=%d playing=%d", x, y, (int)music.IsPlaying());
 +
 +    if (page_ == kPagePlaylist) {
 +        // 60px 起每行 34px，点中第几行就播第几首
@@ -2760,6 +2782,30 @@ index 0000000..37862be
 +            SetPage(kPageHome);
 +        } else if (page_ != kPageHome) {
 +            GoBack();
++        }
++        return true;
++    }
++    // 音乐页/歌单页在判定"误触忽略"之前就先处理：
++    // 手指在 2 寸屏上按圆按钮经常带十几二十像素的位移，不能因此当成误触丢掉。
++    if (page_ == kPageMusic) {
++        if (ady >= 50 && ady > adx) {
++            SetPage(kPagePlaylist);
++            return true;
++        }
++        return HandleMusicTap(x, y);
++    }
++    if (page_ == kPagePlaylist) {
++        if (ady >= 50 && ady > adx) {
++            SetPage(kPageMusic);
++            return true;
++        }
++        int row = (y - 60) / 34;
++        if (y >= 48 && row >= 0 && row < FoxyMusic::Get().TrackCount() && row < 5) {
++            FoxyMusic::Get().Play(row);
++            SetPage(kPageMusic);
++            xTaskCreate(MusicAssetTask, "music_asset", 6144,
++                        reinterpret_cast<void*>(static_cast<intptr_t>(row)), 3, nullptr);
++            return true;
 +        }
 +        return true;
 +    }
@@ -3588,12 +3634,24 @@ index 0000000..37862be
 +
 +
 +
++
++void FoxyUI::SimulateTouch(int x1, int y1, int x2, int y2) {
++    ESP_LOGI(TAG, "simulate touch (%d,%d)->(%d,%d) page=%d", x1, y1, x2, y2, page_);
++    // 开发期入口：先按下再抬起，走和真实触摸完全相同的路径
++    OnPress(x1, y1);
++    int dx = x2 - x1;
++    int dy = y2 - y1;
++    bool short_tap = (dx > -18 && dx < 18 && dy > -18 && dy < 18);
++    OnRelease(x2, y2, short_tap);
++}
++
++
 diff --git a/main/boards/m5stack/core-s3/foxy_ui.h b/main/boards/m5stack/core-s3/foxy_ui.h
 new file mode 100644
-index 0000000..7e6985f
+index 0000000..2323d3d
 --- /dev/null
 +++ b/main/boards/m5stack/core-s3/foxy_ui.h
-@@ -0,0 +1,189 @@
+@@ -0,0 +1,192 @@
 +#pragma once
 +
 +#include <lvgl.h>
@@ -3612,6 +3670,7 @@ index 0000000..7e6985f
 +
 +    bool OnPress(int x, int y);
 +    bool OnRelease(int x, int y, bool short_tap);
++    void SimulateTouch(int x1, int y1, int x2, int y2);
 +    void OnMove(int x, int y);
 +
 +    void SetPage(int page);
@@ -3783,6 +3842,8 @@ index 0000000..7e6985f
 +
 +
 +
++
++
 diff --git a/main/boards/m5stack/core-s3/m5stack_core_s3.cc b/main/boards/m5stack/core-s3/m5stack_core_s3.cc
 index 83d1259..91edaec 100644
 --- a/main/boards/m5stack/core-s3/m5stack_core_s3.cc
@@ -3932,10 +3993,10 @@ index 83d1259..91edaec 100644
  DECLARE_BOARD(M5StackCoreS3Board);
 +
 diff --git a/main/display/display.h b/main/display/display.h
-index c5b0c42..7dfa552 100644
+index c5b0c42..c473a63 100644
 --- a/main/display/display.h
 +++ b/main/display/display.h
-@@ -49,6 +49,12 @@ public:
+@@ -49,6 +49,14 @@ public:
      // physical refresh has already completed. Callers are free to ignore the result.
      virtual bool SetEmotion(const char* emotion);
      virtual void SetChatMessage(const char* role, const char* content);
@@ -3945,10 +4006,12 @@ index c5b0c42..7dfa552 100644
 +    virtual void UploadSnapshot(const std::string& url) { (void)url; }
 +    // 开发期/远程切页：0=首页 1=应用 2=设置 3=对话 4=应用列表 5=工具列表 6=触摸测试 7=计算器 8=音乐
 +    virtual void SetUiPage(int page) { (void)page; }
++    // 开发期用：把一次触摸喂给 UI（(x,y) 按下，(x,y2) 抬起）
++    virtual void InjectTouch(int x, int y, int y2) { (void)x; (void)y; (void)y2; }
      // Remove a matching message without clearing newer content, when supported.
      virtual void RemoveChatMessage(const char* role, const char* content) {}
      virtual void ClearChatMessages();
-@@ -63,6 +69,11 @@ public:
+@@ -63,6 +71,11 @@ public:
      virtual bool IsMonochrome() const { return false; }
      virtual bool SupportsGuiOperations() const { return false; }
      virtual void SetHideSubtitle(bool hide) { (void)hide; }
@@ -3960,6 +4023,12 @@ index c5b0c42..7dfa552 100644
      virtual bool InsertAnimDialog(const char* name, uint32_t duration_ms) {
          (void)name;
          (void)duration_ms;
+@@ -138,3 +151,5 @@ private:
+ };
+ 
+ #endif
++
++
 diff --git a/main/display/lcd_display.cc b/main/display/lcd_display.cc
 index 7be9bad..a366020 100644
 --- a/main/display/lcd_display.cc

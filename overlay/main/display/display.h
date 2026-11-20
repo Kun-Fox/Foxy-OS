@@ -55,6 +55,8 @@ public:
     virtual void UploadSnapshot(const std::string& url) { (void)url; }
     // 开发期/远程切页：0=首页 1=应用 2=设置 3=对话 4=应用列表 5=工具列表 6=触摸测试 7=计算器 8=音乐
     virtual void SetUiPage(int page) { (void)page; }
+    // 开发期用：把一次触摸喂给 UI（(x,y) 按下，(x,y2) 抬起）
+    virtual void InjectTouch(int x, int y, int y2) { (void)x; (void)y; (void)y2; }
     // Remove a matching message without clearing newer content, when supported.
     virtual void RemoveChatMessage(const char* role, const char* content) {}
     virtual void ClearChatMessages();
@@ -149,3 +151,5 @@ private:
 };
 
 #endif
+
+

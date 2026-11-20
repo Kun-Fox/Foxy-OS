@@ -107,6 +107,10 @@ void CoreS3LcdDisplay::ShowMessageCard(const std::string& text) {
     FoxyUI::Get().PushMessage(text);
 }
 
+void CoreS3LcdDisplay::InjectTouch(int x, int y, int y2) {
+    FoxyUI::Get().SimulateTouch(x, y, x, y2);
+}
+
 void CoreS3LcdDisplay::OnMusicCommand(const std::string& action, int index) {
     FoxyUI::Get().HandleMusicCommand(action, index);
 }
@@ -447,3 +451,4 @@ void CoreS3LcdDisplay::GoHome() {
     ESP_LOGI(TAG, "long press: back to home");
     FoxyUI::Get().SetPage(0);
 }
+

@@ -16,6 +16,7 @@ public:
 
     bool OnPress(int x, int y);
     bool OnRelease(int x, int y, bool short_tap);
+    void SimulateTouch(int x1, int y1, int x2, int y2);
     void OnMove(int x, int y);
 
     void SetPage(int page);
@@ -182,6 +183,8 @@ private:
     int volume_ = 0;
     int brightness_ = 100;
 };
+
+
 
 
 
