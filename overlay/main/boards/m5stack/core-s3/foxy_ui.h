@@ -176,8 +176,10 @@ private:
     int drag_ = 0;  // 0 无，1 音量滑条，2 亮度滑条
     lv_obj_t* vol_track_ = nullptr;
     lv_obj_t* vol_knob_ = nullptr;
+    lv_obj_t* vol_fill_ = nullptr;
     lv_obj_t* bri_track_ = nullptr;
     lv_obj_t* bri_knob_ = nullptr;
+    lv_obj_t* bri_fill_ = nullptr;
     void SetVolume(int value);
     void SetBrightness(int value);
     void PlaceKnob(lv_obj_t* track, lv_obj_t* knob, int value);

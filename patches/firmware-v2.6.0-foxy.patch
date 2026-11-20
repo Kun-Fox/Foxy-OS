@@ -1752,10 +1752,10 @@ index 0000000..5203b8c
 +
 diff --git a/main/boards/m5stack/core-s3/foxy_ui.cc b/main/boards/m5stack/core-s3/foxy_ui.cc
 new file mode 100644
-index 0000000..f25d93d
+index 0000000..17d3a6e
 --- /dev/null
 +++ b/main/boards/m5stack/core-s3/foxy_ui.cc
-@@ -0,0 +1,2169 @@
+@@ -0,0 +1,2270 @@
 +#include "foxy_ui.h"
 +
 +#include "audio/audio_codec.h"
@@ -1827,10 +1827,10 @@ index 0000000..f25d93d
 +constexpr int kFoxyH = 240;
 +constexpr int kChatW = 66;
 +constexpr int kChatH = 120;
-+constexpr uint32_t kBgDark = 0x14141A;
-+constexpr uint32_t kCardBg = 0x22222C;
-+constexpr uint32_t kAccent = 0xE8A33D;
-+constexpr uint32_t kTextDim = 0x8A8A96;
++constexpr uint32_t kBgDark = 0x141414;
++constexpr uint32_t kCardBg = 0x262626;
++constexpr uint32_t kAccent = 0xFFFFFF;   // POD2 风格：不用彩色，主色就是白
++constexpr uint32_t kTextDim = 0x999999;
 +
 +constexpr int kGridMargin = 12;
 +constexpr int kGridGap = 10;
@@ -1851,6 +1851,19 @@ index 0000000..f25d93d
 +    return page;
 +}
 +
++
++// POD2 的按压反馈：底色提亮 + 2px 白描边，松手自动恢复。
++void ApplyPressedStyle(lv_obj_t* obj) {
++    if (obj == nullptr) {
++        return;
++    }
++    lv_obj_set_style_bg_color(obj, lv_color_hex(0x3A3A3A), LV_STATE_PRESSED);
++    lv_obj_set_style_bg_opa(obj, LV_OPA_COVER, LV_STATE_PRESSED);
++    lv_obj_set_style_border_width(obj, 2, LV_STATE_PRESSED);
++    lv_obj_set_style_border_color(obj, lv_color_hex(0xFFFFFF), LV_STATE_PRESSED);
++    lv_obj_set_style_border_opa(obj, LV_OPA_80, LV_STATE_PRESSED);
++}
++
 +lv_obj_t* MakeCard(lv_obj_t* parent, int x, int y, int w, int h) {
 +    lv_obj_t* card = lv_obj_create(parent);
 +    lv_obj_set_size(card, w, h);
@@ -1858,9 +1871,10 @@ index 0000000..f25d93d
 +    lv_obj_set_style_bg_color(card, lv_color_hex(kCardBg), 0);
 +    lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
 +    lv_obj_set_style_border_width(card, 0, 0);
-+    lv_obj_set_style_radius(card, 12, 0);
++    lv_obj_set_style_radius(card, 16, 0);
 +    lv_obj_set_style_pad_all(card, 6, 0);
 +    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
++    ApplyPressedStyle(card);
 +    return card;
 +}
 +
@@ -2076,6 +2090,61 @@ index 0000000..f25d93d
 +    UpdateClock();
 +}
 +
++// 用基础图形画图标：这套固件的字体里没有 FontAwesome 符号，
++// 而 POD2 的观感就是"白色细线条画出来的图标"，所以直接摆几何图形。
++static lv_obj_t* IconPart(lv_obj_t* parent, int x, int y, int w, int h, int radius, uint32_t color) {
++    lv_obj_t* part = lv_obj_create(parent);
++    lv_obj_remove_style_all(part);
++    lv_obj_set_size(part, w, h);
++    lv_obj_set_pos(part, x, y);
++    lv_obj_set_style_radius(part, radius, 0);
++    lv_obj_set_style_bg_opa(part, LV_OPA_TRANSP, 0);
++    lv_obj_set_style_border_width(part, 2, 0);
++    lv_obj_set_style_border_color(part, lv_color_hex(color), 0);
++    lv_obj_clear_flag(part, LV_OBJ_FLAG_CLICKABLE);
++    return part;
++}
++
++static void DrawIcon(lv_obj_t* cell, int kind) {
++    // 统一画在 40x40 的盒子里，坐标都相对盒子，改动时只改这里
++    lv_obj_t* box = lv_obj_create(cell);
++    lv_obj_remove_style_all(box);
++    lv_obj_set_size(box, 40, 40);
++    lv_obj_set_pos(box, (kCellW - 40) / 2, 12);
++    lv_obj_clear_flag(box, LV_OBJ_FLAG_CLICKABLE);
++    const uint32_t ink = 0xF2F2F5;
++
++    if (kind == 0) {
++        // 设置：一个大圆 + 中心小点 + 上下左右四个短齿
++        IconPart(box, 8, 8, 24, 24, LV_RADIUS_CIRCLE, ink);
++        IconPart(box, 17, 17, 6, 6, LV_RADIUS_CIRCLE, ink);
++        IconPart(box, 18, 1, 4, 5, 2, ink);
++        IconPart(box, 18, 34, 4, 5, 2, ink);
++        IconPart(box, 1, 18, 5, 4, 2, ink);
++        IconPart(box, 34, 18, 5, 4, 2, ink);
++    } else if (kind == 1) {
++        // 应用：四宫格
++        for (int i = 0; i < 4; i++) {
++            IconPart(box, 6 + (i % 2) * 15, 6 + (i / 2) * 15, 13, 13, 4, ink);
++        }
++    } else if (kind == 2) {
++        // 对话：圆角气泡 + 左下角小尾巴
++        IconPart(box, 4, 8, 32, 22, 7, ink);
++        IconPart(box, 9, 28, 8, 5, 2, ink);
++    } else {
++        // 工具：斜杆 + 圆头，像把螺丝刀
++        static lv_point_precise_t pts[2] = {{6, 32}, {28, 10}};
++        lv_obj_t* line = lv_line_create(box);
++        lv_obj_set_size(line, 40, 40);
++        lv_line_set_points(line, pts, 2);
++        lv_obj_set_style_line_width(line, 3, 0);
++        lv_obj_set_style_line_color(line, lv_color_hex(ink), 0);
++        lv_obj_set_style_line_rounded(line, true, 0);
++        lv_obj_clear_flag(line, LV_OBJ_FLAG_CLICKABLE);
++        IconPart(box, 22, 4, 13, 13, LV_RADIUS_CIRCLE, ink);
++    }
++}
++
 +void FoxyUI::BuildApps() {
 +    const char* names[4] = {"设置", "应用", "对话", "工具"};
 +    for (int i = 0; i < 4; i++) {
@@ -2083,8 +2152,9 @@ index 0000000..f25d93d
 +        int row = i / 2;
 +        lv_obj_t* cell = MakeCard(apps_, kGridMargin + col * (kCellW + kGridGap),
 +                                  kGridMargin + row * (kCellH + kGridGap), kCellW, kCellH);
-+        lv_obj_t* label = MakeLabel(cell, names[i], 0xF2F2F5);
-+        lv_obj_align(label, LV_ALIGN_CENTER, 0, 0);
++        DrawIcon(cell, i);
++        lv_obj_t* label = MakeLabel(cell, names[i], 0xCCCCCC);
++        lv_obj_align(label, LV_ALIGN_BOTTOM_MID, 0, -12);
 +    }
 +}
 +
@@ -2099,7 +2169,10 @@ index 0000000..f25d93d
 +    lv_obj_set_pos(vol_label_, 14, 44);
 +    vol_track_ = MakeCard(settings_, 14, 70, 292, 16);
 +    lv_obj_set_style_radius(vol_track_, 8, 0);
-+    lv_obj_set_style_bg_color(vol_track_, lv_color_hex(0x33333F), 0);
++    lv_obj_set_style_bg_color(vol_track_, lv_color_hex(0x484848), 0);
++    vol_fill_ = MakeCard(settings_, 14, 70, 0, 16);
++    lv_obj_set_style_radius(vol_fill_, 8, 0);
++    lv_obj_set_style_bg_color(vol_fill_, lv_color_hex(0xFFFFFF), 0);
 +    vol_knob_ = MakeCard(settings_, 14, 66, 12, 24);
 +    lv_obj_set_style_radius(vol_knob_, 6, 0);
 +    lv_obj_set_style_bg_color(vol_knob_, lv_color_hex(kAccent), 0);
@@ -2109,10 +2182,13 @@ index 0000000..f25d93d
 +    lv_obj_set_pos(bri_label_, 14, 108);
 +    bri_track_ = MakeCard(settings_, 14, 134, 292, 16);
 +    lv_obj_set_style_radius(bri_track_, 8, 0);
-+    lv_obj_set_style_bg_color(bri_track_, lv_color_hex(0x33333F), 0);
++    lv_obj_set_style_bg_color(bri_track_, lv_color_hex(0x484848), 0);
++    bri_fill_ = MakeCard(settings_, 14, 134, 0, 16);
++    lv_obj_set_style_radius(bri_fill_, 8, 0);
++    lv_obj_set_style_bg_color(bri_fill_, lv_color_hex(0xFFFFFF), 0);
 +    bri_knob_ = MakeCard(settings_, 14, 130, 12, 24);
 +    lv_obj_set_style_radius(bri_knob_, 6, 0);
-+    lv_obj_set_style_bg_color(bri_knob_, lv_color_hex(0x6FA8FF), 0);
++    lv_obj_set_style_bg_color(bri_knob_, lv_color_hex(0xFFFFFF), 0);
 +
 +    info_label_ = MakeLabel(settings_, "读取中…", kTextDim);
 +    lv_obj_set_pos(info_label_, 14, 166);
@@ -2212,6 +2288,14 @@ index 0000000..f25d93d
 +        int row = i / 4;
 +        calc_keys_[i] = MakeButton(calc_, kKeyLeft + col * (kKeyW + kKeyGap),
 +                                   kKeyTop + row * (kKeyH + kKeyGap), kKeyW, kKeyH, keys[i]);
++        if (i == 14) {
++            // "=" 做成白底黑字：整页唯一的主色强调，和音乐播放器的播放键呼应
++            lv_obj_set_style_bg_color(calc_keys_[i], lv_color_hex(0xFFFFFF), 0);
++            lv_obj_t* eq = lv_obj_get_child(calc_keys_[i], 0);
++            if (eq != nullptr) {
++                lv_obj_set_style_text_color(eq, lv_color_hex(0x000000), 0);
++            }
++        }
 +    }
 +    UpdateCalcDisplay();
 +}
@@ -2270,86 +2354,91 @@ index 0000000..f25d93d
 +    // 封面铺满整屏，控制条浮在底部
 +    music_cover_ = lv_image_create(music_);
 +    lv_obj_remove_style_all(music_cover_);
-+    lv_obj_set_pos(music_cover_, 0, 0);
++    lv_obj_set_pos(music_cover_, 0, -24);
++    lv_obj_set_size(music_cover_, kScreenW, 184);
++    lv_obj_set_style_radius(music_cover_, 24, 0);
 +    lv_obj_clear_flag(music_cover_, LV_OBJ_FLAG_CLICKABLE);
 +    lv_obj_add_flag(music_cover_, LV_OBJ_FLAG_HIDDEN);
 +
 +    music_panel_ = lv_obj_create(music_);
 +    lv_obj_remove_style_all(music_panel_);
-+    lv_obj_set_pos(music_panel_, 0, 148);
-+    lv_obj_set_size(music_panel_, kScreenW, kScreenH - 148);
-+    lv_obj_set_style_bg_color(music_panel_, lv_color_hex(0x0B0B10), 0);
-+    lv_obj_set_style_bg_opa(music_panel_, 245, 0);
++    lv_obj_set_pos(music_panel_, 0, 160);
++    lv_obj_set_size(music_panel_, kScreenW, kScreenH - 160);
++    lv_obj_set_style_bg_color(music_panel_, lv_color_hex(0x141414), 0);
++    lv_obj_set_style_bg_opa(music_panel_, LV_OPA_COVER, 0);
 +    lv_obj_clear_flag(music_panel_, LV_OBJ_FLAG_CLICKABLE);
 +
 +    music_title_ = MakeLabel(music_panel_, "-", 0xF2F2F5);
 +    lv_obj_set_width(music_title_, 168);
 +    lv_label_set_long_mode(music_title_, LV_LABEL_LONG_DOT);
-+    lv_obj_set_pos(music_title_, 14, 6);
++    lv_obj_set_pos(music_title_, 16, 4);
 +    lv_obj_set_width(music_title_, 210);
 +    lv_label_set_long_mode(music_title_, LV_LABEL_LONG_CLIP);
 +
 +    music_time_ = MakeLabel(music_panel_, "0:00 / 0:00", kTextDim);
-+    lv_obj_set_pos(music_time_, 196, 6);
++    lv_obj_set_pos(music_time_, 192, 4);
 +    lv_obj_set_width(music_time_, 110);
 +    lv_obj_set_style_text_align(music_time_, LV_TEXT_ALIGN_RIGHT, 0);
 +    lv_label_set_long_mode(music_time_, LV_LABEL_LONG_CLIP);
 +
 +    music_track_ = lv_obj_create(music_panel_);
 +    lv_obj_remove_style_all(music_track_);
-+    lv_obj_set_pos(music_track_, 14, 30);
-+    lv_obj_set_size(music_track_, 292, 5);
-+    lv_obj_set_style_bg_color(music_track_, lv_color_hex(0x33333F), 0);
++    lv_obj_set_pos(music_track_, 16, 30);
++    lv_obj_set_size(music_track_, 288, 4);
++    lv_obj_set_style_bg_color(music_track_, lv_color_hex(0x484848), 0);
 +    lv_obj_set_style_bg_opa(music_track_, LV_OPA_COVER, 0);
 +    lv_obj_set_style_radius(music_track_, 3, 0);
 +    lv_obj_clear_flag(music_track_, LV_OBJ_FLAG_CLICKABLE);
 +
 +    music_fill_ = lv_obj_create(music_panel_);
 +    lv_obj_remove_style_all(music_fill_);
-+    lv_obj_set_pos(music_fill_, 14, 30);
-+    lv_obj_set_size(music_fill_, 0, 5);
-+    lv_obj_set_style_bg_color(music_fill_, lv_color_hex(0xE8A33D), 0);
++    lv_obj_set_pos(music_fill_, 16, 30);
++    lv_obj_set_size(music_fill_, 0, 4);
++    lv_obj_set_style_bg_color(music_fill_, lv_color_hex(0xFFFFFF), 0);
 +    lv_obj_set_style_bg_opa(music_fill_, LV_OPA_COVER, 0);
 +    lv_obj_set_style_radius(music_fill_, 3, 0);
 +    lv_obj_clear_flag(music_fill_, LV_OBJ_FLAG_CLICKABLE);
 +
 +    music_knob_ = lv_obj_create(music_panel_);
 +    lv_obj_remove_style_all(music_knob_);
-+    lv_obj_set_size(music_knob_, 12, 12);
++    lv_obj_set_size(music_knob_, 10, 10);
 +    lv_obj_set_style_bg_color(music_knob_, lv_color_hex(0xF2F2F5), 0);
 +    lv_obj_set_style_bg_opa(music_knob_, LV_OPA_COVER, 0);
 +    lv_obj_set_style_radius(music_knob_, LV_RADIUS_CIRCLE, 0);
-+    lv_obj_set_pos(music_knob_, 8, 26);
++    lv_obj_set_pos(music_knob_, 10, 26);
 +    lv_obj_clear_flag(music_knob_, LV_OBJ_FLAG_CLICKABLE);
 +
-+    // 三个圆形按钮：上一首 / 播放暂停 / 下一首
-+    auto make_round = [this](int cx, const char* text) {
++    // 三个圆形按钮：中间白色实心（黑字），左右描边空心 —— POD2 播放器的观感
++    auto make_round = [this](int cx, int cy, int size, const char* text, bool filled) {
 +        lv_obj_t* btn = lv_obj_create(music_panel_);
 +        lv_obj_remove_style_all(btn);
-+        lv_obj_set_size(btn, 46, 46);
-+        lv_obj_set_pos(btn, cx, 44);
-+        lv_obj_set_style_bg_color(btn, lv_color_hex(0x24242E), 0);
-+        lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
++        lv_obj_set_size(btn, size, size);
++        lv_obj_set_pos(btn, cx, cy);
 +        lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0);
++        if (filled) {
++            lv_obj_set_style_bg_color(btn, lv_color_hex(0xFFFFFF), 0);
++            lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
++        } else {
++            lv_obj_set_style_bg_opa(btn, LV_OPA_TRANSP, 0);
++            lv_obj_set_style_border_width(btn, 2, 0);
++            lv_obj_set_style_border_color(btn, lv_color_hex(0xFFFFFF), 0);
++            lv_obj_set_style_border_opa(btn, LV_OPA_60, 0);
++        }
 +        lv_obj_clear_flag(btn, LV_OBJ_FLAG_CLICKABLE);
-+        lv_obj_t* label = MakeLabel(btn, text, 0xF2F2F5);
++        lv_obj_t* label = MakeLabel(btn, text, filled ? 0x000000 : 0xF2F2F5);
 +        lv_obj_center(label);
 +        return btn;
 +    };
-+    music_btn_prev_ = make_round(74, "<<");
-+    music_play_ = make_round(137, "▶");
-+    lv_obj_t* play_label = lv_obj_get_child(music_play_, 0);
-+    if (play_label != nullptr) {
-+        lv_label_set_text(play_label, "\u25b6");
-+    }
-+    music_btn_next_ = make_round(200, ">>");
++    music_btn_prev_ = make_round(72, 44, 40, "<<", false);
++    music_play_ = make_round(136, 40, 48, "\u25b6", true);
++    music_btn_next_ = make_round(208, 44, 40, ">>", false);
 +
 +    // 歌词浮层：盖住封面区域，点任意处返回封面
 +    lyrics_panel_ = lv_obj_create(music_);
 +    lv_obj_remove_style_all(lyrics_panel_);
 +    lv_obj_set_pos(lyrics_panel_, 0, 0);
-+    lv_obj_set_size(lyrics_panel_, kScreenW, 148);
-+    lv_obj_set_style_bg_color(lyrics_panel_, lv_color_hex(0x101016), 0);
++    lv_obj_set_size(lyrics_panel_, kScreenW, 160);
++    lv_obj_set_style_bg_color(lyrics_panel_, lv_color_hex(0x141414), 0);
 +    lv_obj_set_style_bg_opa(lyrics_panel_, LV_OPA_COVER, 0);
 +    lv_obj_clear_flag(lyrics_panel_, LV_OBJ_FLAG_CLICKABLE);
 +    lv_obj_add_flag(lyrics_panel_, LV_OBJ_FLAG_HIDDEN);
@@ -2420,7 +2509,7 @@ index 0000000..f25d93d
 +                shown = shown.substr(0, 18) + "…";
 +            }
 +            lv_label_set_text(lyric_labels_[i], shown.c_str());
-+            lv_obj_set_style_text_color(lyric_labels_[i], lv_color_hex(0xE8A33D), 0);
++            lv_obj_set_style_text_color(lyric_labels_[i], lv_color_hex(0xFFFFFF), 0);
 +        } else {
 +            lv_label_set_text(lyric_labels_[i], "");
 +        }
@@ -2520,7 +2609,14 @@ index 0000000..f25d93d
 +    {
 +        DisplayLockGuard lock(display_);
 +        if (music_title_ != nullptr) {
-+            lv_label_set_text(music_title_, title);
++            {
++            // 标题太长会压到右边的时长上，先掐到 20 个字（含省略号）
++            std::string shown = title;
++            if (shown.size() > 20) {
++                shown = shown.substr(0, 20) + "…";
++            }
++            lv_label_set_text(music_title_, shown.c_str());
++        }
 +        }
 +        if (music_time_ != nullptr) {
 +            lv_label_set_text(music_time_, time_text);
@@ -3263,6 +3359,11 @@ index 0000000..f25d93d
 +    int width = (area.x2 - area.x1 + 1) - knob_w;
 +    int clamped = value < 0 ? 0 : (value > 100 ? 100 : value);
 +    lv_obj_set_x(knob, area.x1 + (clamped * width) / 100);
++    // 已经走过的那一段填白，扫一眼就知道大概多少
++    lv_obj_t* fill = (knob == vol_knob_) ? vol_fill_ : bri_fill_;
++    if (fill != nullptr) {
++        lv_obj_set_width(fill, (clamped * width) / 100 + knob_w / 2);
++    }
 +}
 +
 +void FoxyUI::SetVolume(int value) {
@@ -3510,9 +3611,9 @@ index 0000000..f25d93d
 +        int w = kScreenW - kKbdMargin - x;
 +        lv_obj_t* send = MakeCard(kbd_, x, y, w, kKbdKeyH);
 +        lv_obj_set_style_radius(send, 6, 0);
-+        lv_obj_set_style_bg_color(send, lv_color_hex(0xE8A33D), 0);
++        lv_obj_set_style_bg_color(send, lv_color_hex(0xFFFFFF), 0);
 +        lv_obj_clear_flag(send, LV_OBJ_FLAG_CLICKABLE);
-+        lv_obj_t* send_text = MakeLabel(send, "发送", 0x14141A);
++        lv_obj_t* send_text = MakeLabel(send, "发送", 0x000000);
 +        lv_obj_center(send_text);
 +        kbd_keys_[kbd_key_count_] = send;
 +        kbd_codes_[kbd_key_count_] = -4;
@@ -3852,7 +3953,7 @@ index 0000000..f25d93d
 +    // 歌单做成独立的一页（浮层那套在这块屏上一直画不出来，换页最稳）
 +    playlist_page_ = MakePage(lv_screen_active());
 +
-+    lv_obj_t* title = MakeLabel(playlist_page_, "歌单", 0xE8A33D);
++    lv_obj_t* title = MakeLabel(playlist_page_, "歌单", 0xFFFFFF);
 +    lv_obj_set_pos(title, 14, 10);
 +    lv_obj_t* hint = MakeLabel(playlist_page_, "点一首播放 · 下滑收起", kTextDim);
 +    lv_obj_set_pos(hint, 14, 34);
@@ -3904,7 +4005,7 @@ index 0000000..f25d93d
 +                 name.c_str());
 +        lv_label_set_text(playlist_rows_[i], line);
 +        lv_obj_set_style_text_color(playlist_rows_[i],
-+                                    lv_color_hex(i == music.CurrentIndex() ? 0xE8A33D : 0xF2F2F5), 0);
++                                    lv_color_hex(i == music.CurrentIndex() ? 0xFFFFFF : 0xF2F2F5), 0);
 +    }
 +}
 +
@@ -3927,10 +4028,10 @@ index 0000000..f25d93d
 +
 diff --git a/main/boards/m5stack/core-s3/foxy_ui.h b/main/boards/m5stack/core-s3/foxy_ui.h
 new file mode 100644
-index 0000000..c004926
+index 0000000..b726b2a
 --- /dev/null
 +++ b/main/boards/m5stack/core-s3/foxy_ui.h
-@@ -0,0 +1,194 @@
+@@ -0,0 +1,196 @@
 +#pragma once
 +
 +#include <lvgl.h>
@@ -4109,8 +4210,10 @@ index 0000000..c004926
 +    int drag_ = 0;  // 0 无，1 音量滑条，2 亮度滑条
 +    lv_obj_t* vol_track_ = nullptr;
 +    lv_obj_t* vol_knob_ = nullptr;
++    lv_obj_t* vol_fill_ = nullptr;
 +    lv_obj_t* bri_track_ = nullptr;
 +    lv_obj_t* bri_knob_ = nullptr;
++    lv_obj_t* bri_fill_ = nullptr;
 +    void SetVolume(int value);
 +    void SetBrightness(int value);
 +    void PlaceKnob(lv_obj_t* track, lv_obj_t* knob, int value);
