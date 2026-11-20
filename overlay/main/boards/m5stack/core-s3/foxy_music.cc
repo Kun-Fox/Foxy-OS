@@ -45,20 +45,33 @@ static void WriteMonoToCodec(AudioCodec* codec, const std::vector<int16_t>& mono
     if (c3 == nullptr) {
         return;
     }
-    static std::vector<int16_t> stereo;
-    stereo.resize(mono.size() * 2);
-    for (size_t i = 0; i < mono.size(); ++i) {
-        stereo[2 * i] = mono[i];
-        stereo[2 * i + 1] = mono[i];
-    }
+    // 本板 I2S TX 是 MONO（slot_mode=MONO、slot_mask=0x1），直接写单声道样本，
+    // 千万别复制成 L/R 交错：那样每个采样会被当成两个采样播出去，声音变调成噪声。
+    const std::vector<int16_t>& stereo = mono;
     const size_t kFramesPerWrite = 480;  // 20ms @24k，和 DMA 一格同量级
     size_t sent = 0;
+    static int write_errors = 0;
     while (sent < mono.size()) {
         size_t frames = mono.size() - sent;
         if (frames > kFramesPerWrite) {
             frames = kFramesPerWrite;
         }
-        c3->WriteStereoFrames(stereo.data() + sent * 2, frames, 200);
+        // 每次写之前重新确认"输出已开 + 音量已应用"：esp_codec_dev 在静音/空闲时会关掉功放，
+    // 只 EnableOutput 不一定把 AW88298 的 unmute 写回去，所以再打一次音量强制生效。
+    c3->EnableOutput(true);
+    c3->SetOutputVolume(c3->output_volume());
+    int wrote = c3->WritePcm(stereo.data() + sent, frames, 200);
+        if (wrote < 0) {
+            if (write_errors++ < 3) {
+                ESP_LOGE("FoxyMusic", "i2s write failed at %u/%u", (unsigned)sent, (unsigned)mono.size());
+            }
+            if (write_errors > 200) {
+                ESP_LOGE("FoxyMusic", "i2s keeps failing, stop playback");
+                return;
+            }
+        } else {
+            write_errors = 0;
+        }
         sent += frames;
     }
 }
@@ -94,19 +107,25 @@ public:
             in_rate_ = in_rate;
             channels_ = channels;
             pos_ = 0.0;
+            acc_ = 0.0f;
+            acc_n_ = 0;
             ESP_LOGI(TAG, "stream %d Hz %d ch", in_rate_, channels_);
         }
-        double step = static_cast<double>(in_rate_) / kOutputSampleRate;
+        // 降采样用"盒式平均"（把落在同一个输出点里的若干输入样本求平均）。
+        // 之前是直接重复上一个样本，44.1k -> 24k 时会严重混叠，听感就是电流声。
+        const double step = static_cast<double>(in_rate_) / kOutputSampleRate;
         for (size_t i = 0; i < frames; ++i) {
             const float* frame = src + i * channels_;
-            float l = frame[0];
-            float r = channels_ > 1 ? frame[1] : l;
-            float mono = (l + r) * 0.5f;
-            last_ = mono;
-            pos_ += step;
-            while (pos_ >= 1.0) {
-                pos_ -= 1.0;
-                out.push_back(static_cast<int16_t>(last_ * 32767.0f));
+            const float l = frame[0];
+            const float r = channels_ > 1 ? frame[1] : l;
+            acc_ += (l + r) * 0.5f;
+            acc_n_ += 1;
+            pos_ += 1.0;
+            while (pos_ >= step) {
+                pos_ -= step;
+                out.push_back(static_cast<int16_t>((acc_ / static_cast<float>(acc_n_)) * 32767.0f));
+                acc_ = 0.0f;
+                acc_n_ = 0;
                 if (static_cast<int>(out.size()) >= kChunkSamples) {
                     WriteMonoToCodec(codec, out);
                     out.clear();
@@ -120,7 +139,8 @@ private:
     int in_rate_ = 0;
     int channels_ = 0;
     double pos_ = 0.0;
-    float last_ = 0.0f;
+    float acc_ = 0.0f;
+    int acc_n_ = 0;
     int64_t deadline_us_ = 0;
 };
 
@@ -548,6 +568,10 @@ void FoxyMusic::TaskLoop(int index, int generation) {
                 out.clear();
             }
             elapsed_seconds_ = elapsed_ms / 1000;
+            static int progress_tick = 0;
+            if (++progress_tick % 20 == 0) {
+                ESP_LOGI(TAG, "progress %d ms, decoded %u frames", elapsed_ms, (unsigned)frames);
+            }
             if (paused_) {
                 break;
             }
@@ -711,6 +735,7 @@ std::string FoxyMusic::LyricAt(int elapsed_ms) const {
     }
     return current;
 }
+
 
 
 
