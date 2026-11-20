@@ -1,6 +1,10 @@
 #include "board.h"
 #include "cores3_audio_codec.h"
 #include <vector>
+
+#ifndef FOXY_MUSIC_USE_CODEC_OUTPUT
+#define FOXY_MUSIC_USE_CODEC_OUTPUT 1
+#endif
 #include <cmath>
 #include "foxy_music.h"
 
@@ -45,6 +49,13 @@ static void WriteMonoToCodec(AudioCodec* codec, const std::vector<int16_t>& mono
     if (c3 == nullptr) {
         return;
     }
+    // 先走和 TTS 完全相同的通路（AudioCodec::OutputData -> esp_codec_dev_write）做对照，
+    // 验证"直写 I2S"与"codec 抽象层"哪一条才出得了声。
+#if FOXY_MUSIC_USE_CODEC_OUTPUT
+    std::vector<int16_t> copy = mono;
+    codec->OutputData(copy);
+    return;
+#endif
     // 本板 I2S TX 是 MONO（slot_mode=MONO、slot_mask=0x1），直接写单声道样本，
     // 千万别复制成 L/R 交错：那样每个采样会被当成两个采样播出去，声音变调成噪声。
     const std::vector<int16_t>& stereo = mono;
@@ -553,6 +564,14 @@ void FoxyMusic::TaskLoop(int index, int generation) {
             if (ret != ESP_AUDIO_ERR_OK || frame.decoded_size == 0) {
                 break;  // 帧不完整，等更多数据
             }
+            // 解码器只回填 raw.consumed，不会自己改 raw.len —— 必须手动推进输入指针。
+            // 少了这一步就会把同一帧反复解码：听感是持续的电流声，进度条还会跑过歌曲时长。
+            const uint32_t consumed = raw.consumed;
+            if (consumed == 0) {
+                break;
+            }
+            raw.buffer += consumed;
+            raw.len -= consumed;
             int channels = info.channel > 0 ? info.channel : 2;
             int rate = info.sample_rate > 0 ? info.sample_rate : 44100;
             size_t frames = frame.decoded_size / (2 * channels);
@@ -627,7 +646,7 @@ bool FoxyMusic::LoadCover(int index) {
 
     esp_http_client_config_t cfg = {};
     cfg.url = url;
-    cfg.timeout_ms = 2500;
+    cfg.timeout_ms = 8000;   // 153KB 的封面在 2.4G 上偶尔要两三秒，超时给足
     cfg.buffer_size = 4096;
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
     if (client == nullptr) {
@@ -636,12 +655,19 @@ bool FoxyMusic::LoadCover(int index) {
     int total = 0;
     if (esp_http_client_open(client, 0) == ESP_OK) {
         esp_http_client_fetch_headers(client);
+        int stalls = 0;
         while (total < static_cast<int>(buffer.size())) {
             int read = esp_http_client_read(client, reinterpret_cast<char*>(buffer.data() + total),
                                             buffer.size() - total);
             if (read <= 0) {
-                break;
+                // 读空了但还没收满：多半是这一下没等到数据，别急着放弃，退让一下再读
+                if (++stalls > 8 || total == 0) {
+                    break;
+                }
+                vTaskDelay(pdMS_TO_TICKS(50));
+                continue;
             }
+            stalls = 0;
             total += read;
         }
     }

@@ -525,6 +525,8 @@ void FoxyUI::BuildMusic() {
     lv_obj_clear_flag(music_panel_, LV_OBJ_FLAG_CLICKABLE);
 
     music_title_ = MakeLabel(music_panel_, "-", 0xF2F2F5);
+    lv_obj_set_width(music_title_, 168);
+    lv_label_set_long_mode(music_title_, LV_LABEL_LONG_DOT);
     lv_obj_set_pos(music_title_, 14, 6);
     lv_obj_set_width(music_title_, 210);
     lv_label_set_long_mode(music_title_, LV_LABEL_LONG_CLIP);
@@ -654,7 +656,12 @@ void FoxyUI::UpdateLyrics() {
             continue;
         }
         if (i == 1) {
-            lv_label_set_text(lyric_labels_[i], current.c_str());
+            // 一句歌词太长就掐断加省略号：这块屏没有更小的字号，硬塞会压到屏幕外
+            std::string shown = current;
+            if (shown.size() > 18) {
+                shown = shown.substr(0, 18) + "…";
+            }
+            lv_label_set_text(lyric_labels_[i], shown.c_str());
             lv_obj_set_style_text_color(lyric_labels_[i], lv_color_hex(0xE8A33D), 0);
         } else {
             lv_label_set_text(lyric_labels_[i], "");

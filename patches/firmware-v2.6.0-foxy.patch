@@ -881,13 +881,17 @@ index 0000000..5ecefbf
 +
 diff --git a/main/boards/m5stack/core-s3/foxy_music.cc b/main/boards/m5stack/core-s3/foxy_music.cc
 new file mode 100644
-index 0000000..2dd5a61
+index 0000000..dd96736
 --- /dev/null
 +++ b/main/boards/m5stack/core-s3/foxy_music.cc
-@@ -0,0 +1,746 @@
+@@ -0,0 +1,772 @@
 +#include "board.h"
 +#include "cores3_audio_codec.h"
 +#include <vector>
++
++#ifndef FOXY_MUSIC_USE_CODEC_OUTPUT
++#define FOXY_MUSIC_USE_CODEC_OUTPUT 1
++#endif
 +#include <cmath>
 +#include "foxy_music.h"
 +
@@ -932,6 +936,13 @@ index 0000000..2dd5a61
 +    if (c3 == nullptr) {
 +        return;
 +    }
++    // 先走和 TTS 完全相同的通路（AudioCodec::OutputData -> esp_codec_dev_write）做对照，
++    // 验证"直写 I2S"与"codec 抽象层"哪一条才出得了声。
++#if FOXY_MUSIC_USE_CODEC_OUTPUT
++    std::vector<int16_t> copy = mono;
++    codec->OutputData(copy);
++    return;
++#endif
 +    // 本板 I2S TX 是 MONO（slot_mode=MONO、slot_mask=0x1），直接写单声道样本，
 +    // 千万别复制成 L/R 交错：那样每个采样会被当成两个采样播出去，声音变调成噪声。
 +    const std::vector<int16_t>& stereo = mono;
@@ -1440,6 +1451,14 @@ index 0000000..2dd5a61
 +            if (ret != ESP_AUDIO_ERR_OK || frame.decoded_size == 0) {
 +                break;  // 帧不完整，等更多数据
 +            }
++            // 解码器只回填 raw.consumed，不会自己改 raw.len —— 必须手动推进输入指针。
++            // 少了这一步就会把同一帧反复解码：听感是持续的电流声，进度条还会跑过歌曲时长。
++            const uint32_t consumed = raw.consumed;
++            if (consumed == 0) {
++                break;
++            }
++            raw.buffer += consumed;
++            raw.len -= consumed;
 +            int channels = info.channel > 0 ? info.channel : 2;
 +            int rate = info.sample_rate > 0 ? info.sample_rate : 44100;
 +            size_t frames = frame.decoded_size / (2 * channels);
@@ -1514,7 +1533,7 @@ index 0000000..2dd5a61
 +
 +    esp_http_client_config_t cfg = {};
 +    cfg.url = url;
-+    cfg.timeout_ms = 2500;
++    cfg.timeout_ms = 8000;   // 153KB 的封面在 2.4G 上偶尔要两三秒，超时给足
 +    cfg.buffer_size = 4096;
 +    esp_http_client_handle_t client = esp_http_client_init(&cfg);
 +    if (client == nullptr) {
@@ -1523,12 +1542,19 @@ index 0000000..2dd5a61
 +    int total = 0;
 +    if (esp_http_client_open(client, 0) == ESP_OK) {
 +        esp_http_client_fetch_headers(client);
++        int stalls = 0;
 +        while (total < static_cast<int>(buffer.size())) {
 +            int read = esp_http_client_read(client, reinterpret_cast<char*>(buffer.data() + total),
 +                                            buffer.size() - total);
 +            if (read <= 0) {
-+                break;
++                // 读空了但还没收满：多半是这一下没等到数据，别急着放弃，退让一下再读
++                if (++stalls > 8 || total == 0) {
++                    break;
++                }
++                vTaskDelay(pdMS_TO_TICKS(50));
++                continue;
 +            }
++            stalls = 0;
 +            total += read;
 +        }
 +    }
@@ -1726,10 +1752,10 @@ index 0000000..5203b8c
 +
 diff --git a/main/boards/m5stack/core-s3/foxy_ui.cc b/main/boards/m5stack/core-s3/foxy_ui.cc
 new file mode 100644
-index 0000000..60d19ab
+index 0000000..f25d93d
 --- /dev/null
 +++ b/main/boards/m5stack/core-s3/foxy_ui.cc
-@@ -0,0 +1,2162 @@
+@@ -0,0 +1,2169 @@
 +#include "foxy_ui.h"
 +
 +#include "audio/audio_codec.h"
@@ -2257,6 +2283,8 @@ index 0000000..60d19ab
 +    lv_obj_clear_flag(music_panel_, LV_OBJ_FLAG_CLICKABLE);
 +
 +    music_title_ = MakeLabel(music_panel_, "-", 0xF2F2F5);
++    lv_obj_set_width(music_title_, 168);
++    lv_label_set_long_mode(music_title_, LV_LABEL_LONG_DOT);
 +    lv_obj_set_pos(music_title_, 14, 6);
 +    lv_obj_set_width(music_title_, 210);
 +    lv_label_set_long_mode(music_title_, LV_LABEL_LONG_CLIP);
@@ -2386,7 +2414,12 @@ index 0000000..60d19ab
 +            continue;
 +        }
 +        if (i == 1) {
-+            lv_label_set_text(lyric_labels_[i], current.c_str());
++            // 一句歌词太长就掐断加省略号：这块屏没有更小的字号，硬塞会压到屏幕外
++            std::string shown = current;
++            if (shown.size() > 18) {
++                shown = shown.substr(0, 18) + "…";
++            }
++            lv_label_set_text(lyric_labels_[i], shown.c_str());
 +            lv_obj_set_style_text_color(lyric_labels_[i], lv_color_hex(0xE8A33D), 0);
 +        } else {
 +            lv_label_set_text(lyric_labels_[i], "");
