@@ -481,7 +481,7 @@ static void DrawIcon(lv_obj_t* cell, int kind) {
     lv_obj_t* box = lv_obj_create(cell);
     lv_obj_remove_style_all(box);
     lv_obj_set_size(box, 40, 40);
-    lv_obj_set_pos(box, (kCellW - 40) / 2, 8);
+    lv_obj_set_pos(box, (kCellW - 40) / 2, -2);
     lv_obj_clear_flag(box, LV_OBJ_FLAG_CLICKABLE);
     const uint32_t ink = 0xF2F2F5;
 
@@ -528,8 +528,12 @@ void FoxyUI::BuildApps() {
         lv_obj_t* cell = MakeCard(apps_, kGridMargin + col * (kCellW + kGridGap),
                                   kGridMargin + row * (kCellH + kGridGap), kCellW, kCellH);
         DrawIcon(cell, i);
-        lv_obj_t* label = MakeLabel(cell, names[i], 0xCCCCCC);
-        lv_obj_align(label, LV_ALIGN_BOTTOM_MID, 0, -8);
+        lv_obj_t* label = MakeLabel(cell, names[i], 0xF2F2F5);
+        lv_obj_align(label, LV_ALIGN_BOTTOM_MID, 0, -26);
+        static const char* subs[4] = {"音量 · 亮度", "音乐 · 小说", "语音 · 打字", "计算器 · 测试"};
+        lv_obj_t* sub = MakeLabel(cell, subs[i], 0x8A8A92);
+        lv_obj_align(sub, LV_ALIGN_BOTTOM_MID, 0, -8);
+        SetLabelFont(sub, font14_);
     }
 }
 
