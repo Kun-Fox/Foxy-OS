@@ -39,6 +39,7 @@
 #define MAIN_EVENT_STARTUP_HINT_TIMEOUT (1 << 14)
 #define MAIN_EVENT_PROTOCOL_PENDING (1 << 15)
 #define MAIN_EVENT_STANDBY_TIMEOUT (1 << 16)
+#define MAIN_EVENT_RECONNECT_TIMEOUT (1 << 17)
 
 enum AecMode {
     kAecOff,
@@ -123,6 +124,8 @@ public:
      * device with text (no wake word / touch needed).
      */
     void ArmStandbyTimer(int seconds);
+    void ArmReconnectTimer(int seconds);
+    void CancelReconnectTimer();
     void CancelStandbyTimer();
     void OpenStandbyChannel();
     bool UpgradeFirmware(const std::string& url, const std::string& version = "");
@@ -152,6 +155,8 @@ private:
     esp_timer_handle_t clock_timer_handle_ = nullptr;
     esp_timer_handle_t startup_wake_word_hint_timer_ = nullptr;
     esp_timer_handle_t standby_timer_handle_ = nullptr;
+    esp_timer_handle_t reconnect_timer_handle_ = nullptr;
+    int reconnect_attempts_ = 0;
     DeviceStateMachine state_machine_;
     ListeningMode listening_mode_ = kListeningModeAutoStop;
     AecMode aec_mode_ = kAecOff;

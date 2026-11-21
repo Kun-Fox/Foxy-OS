@@ -66,6 +66,19 @@ Application::Application() : notify_player_(audio_service_) {
                                                   .name = "standby_timer",
                                                   .skip_unhandled_events = true};
     esp_timer_create(&standby_timer_args, &standby_timer_handle_);
+
+    // 断线自愈：服务器重启/网络抖动后自己把待命通道连回来
+    esp_timer_create_args_t reconnect_timer_args = {.callback =
+                                                         [](void* arg) {
+                                                             Application* app = (Application*)arg;
+                                                             xEventGroupSetBits(app->event_group_,
+                                                                                MAIN_EVENT_RECONNECT_TIMEOUT);
+                                                         },
+                                                     .arg = this,
+                                                     .dispatch_method = ESP_TIMER_TASK,
+                                                     .name = "reconnect_timer",
+                                                     .skip_unhandled_events = true};
+    esp_timer_create(&reconnect_timer_args, &reconnect_timer_handle_);
 }
 
 Application::~Application() {
@@ -74,6 +87,11 @@ Application::~Application() {
         esp_timer_stop(standby_timer_handle_);
         esp_timer_delete(standby_timer_handle_);
         standby_timer_handle_ = nullptr;
+    }
+    if (reconnect_timer_handle_ != nullptr) {
+        esp_timer_stop(reconnect_timer_handle_);
+        esp_timer_delete(reconnect_timer_handle_);
+        reconnect_timer_handle_ = nullptr;
     }
     if (clock_timer_handle_ != nullptr) {
         esp_timer_stop(clock_timer_handle_);
@@ -236,11 +254,24 @@ void Application::Run() {
         MAIN_EVENT_NETWORK_CONNECTED | MAIN_EVENT_NETWORK_DISCONNECTED | MAIN_EVENT_TOGGLE_CHAT |
         MAIN_EVENT_START_LISTENING | MAIN_EVENT_STOP_LISTENING | MAIN_EVENT_ACTIVATION_DONE |
         MAIN_EVENT_STATE_CHANGED | MAIN_EVENT_PLAYBACK_DRAINED | MAIN_EVENT_STARTUP_HINT_TIMEOUT |
-        MAIN_EVENT_PROTOCOL_PENDING | MAIN_EVENT_STANDBY_TIMEOUT;
+MAIN_EVENT_PROTOCOL_PENDING | MAIN_EVENT_STANDBY_TIMEOUT | MAIN_EVENT_RECONNECT_TIMEOUT;
 
     while (true) {
         auto bits = xEventGroupWaitBits(event_group_, ALL_EVENTS, pdTRUE, pdFALSE, portMAX_DELAY);
 
+        if (bits & MAIN_EVENT_RECONNECT_TIMEOUT) {
+            if (GetDeviceState() == kDeviceStateIdle && protocol_ != nullptr &&
+                !protocol_->IsAudioChannelOpened()) {
+                reconnect_attempts_++;
+                ESP_LOGI(TAG, "reconnecting standby channel (attempt %d)", reconnect_attempts_);
+                OpenStandbyChannel();
+                if (!protocol_->IsAudioChannelOpened()) {
+                    int delay = 5 * reconnect_attempts_;
+                    if (delay > 30) delay = 30;
+                    ArmReconnectTimer(delay);
+                }
+            }
+        }
         if (bits & MAIN_EVENT_STANDBY_TIMEOUT) {
             // Nothing was said after the last reply: stop listening (mic off) but
             // keep the websocket open so a typed message can still wake us.
@@ -641,6 +672,7 @@ void Application::InitializeProtocol() {
 
     protocol_->OnAudioChannelOpened([this, codec, &board]() {
         board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
+        CancelReconnectTimer();
         if (protocol_->server_sample_rate() != codec->output_sample_rate()) {
             ESP_LOGW(TAG,
                      "Server sample rate %d does not match device output sample rate %d, "
@@ -651,6 +683,7 @@ void Application::InitializeProtocol() {
 
     protocol_->OnAudioChannelClosed([this, &board]() {
         board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
+        ArmReconnectTimer(5);
         Schedule([this]() {
             auto display = Board::GetInstance().GetDisplay();
             display->SetChatMessage("system", "");
@@ -934,6 +967,21 @@ void Application::ArmStandbyTimer(int seconds) {
     }
     esp_timer_stop(standby_timer_handle_);
     esp_timer_start_once(standby_timer_handle_, (uint64_t)seconds * 1000000ULL);
+}
+
+void Application::ArmReconnectTimer(int seconds) {
+    if (reconnect_timer_handle_ == nullptr) {
+        return;
+    }
+    esp_timer_stop(reconnect_timer_handle_);
+    esp_timer_start_once(reconnect_timer_handle_, (uint64_t)seconds * 1000000ULL);
+}
+
+void Application::CancelReconnectTimer() {
+    if (reconnect_timer_handle_ != nullptr) {
+        esp_timer_stop(reconnect_timer_handle_);
+    }
+    reconnect_attempts_ = 0;
 }
 
 void Application::CancelStandbyTimer() {
