@@ -576,7 +576,7 @@ void FoxyUI::BuildSettings() {
     lv_obj_set_style_bg_color(bri_knob_, lv_color_hex(0xFFFFFF), 0);
 
     info_label_ = MakeLabel(settings_, "读取中…", 0x8A8A92);
-    lv_obj_set_pos(info_label_, 14, 182);
+    lv_obj_set_pos(info_label_, 14, 186);
     lv_obj_set_style_text_line_space(info_label_, 6, 0);
     lv_obj_set_style_text_line_space(info_label_, 2, 0);
 
@@ -626,7 +626,7 @@ void FoxyUI::BuildTouchTest() {
     lv_obj_set_pos(hint, 14, 40);
     SetLabelFont(hint, font14_);
     lv_obj_t* card = MakeCard(touchtest_, 12, 76, 296, 96);
-    touch_label_ = MakeLabel(card, "x ---   y ---", 0xF2F2F5);
+    touch_label_ = MakeLabel(card, "点一下屏幕", 0xF2F2F5);
     lv_obj_center(touch_label_);
     SetLabelFont(touch_label_, font20_);
     touch_dot_ = MakeCard(touchtest_, 156, 190, 10, 10);
