@@ -626,7 +626,7 @@ void FoxyUI::BuildTouchTest() {
     lv_obj_set_pos(hint, 14, 40);
     SetLabelFont(hint, font14_);
     lv_obj_t* card = MakeCard(touchtest_, 12, 76, 296, 96);
-    touch_label_ = MakeLabel(card, "点一下屏幕", 0xF2F2F5);
+    touch_label_ = MakeLabel(card, "x ---   y ---", 0xF2F2F5);
     lv_obj_center(touch_label_);
     SetLabelFont(touch_label_, font20_);
     touch_dot_ = MakeCard(touchtest_, 156, 190, 10, 10);

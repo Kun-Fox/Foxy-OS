@@ -1833,7 +1833,7 @@ index 0000000..5203b8c
 +
 diff --git a/main/boards/m5stack/core-s3/foxy_ui.cc b/main/boards/m5stack/core-s3/foxy_ui.cc
 new file mode 100644
-index 0000000..2cee814
+index 0000000..4a8a82d
 --- /dev/null
 +++ b/main/boards/m5stack/core-s3/foxy_ui.cc
 @@ -0,0 +1,2463 @@
@@ -2465,7 +2465,7 @@ index 0000000..2cee814
 +    lv_obj_set_pos(hint, 14, 40);
 +    SetLabelFont(hint, font14_);
 +    lv_obj_t* card = MakeCard(touchtest_, 12, 76, 296, 96);
-+    touch_label_ = MakeLabel(card, "点一下屏幕", 0xF2F2F5);
++    touch_label_ = MakeLabel(card, "x ---   y ---", 0xF2F2F5);
 +    lv_obj_center(touch_label_);
 +    SetLabelFont(touch_label_, font20_);
 +    touch_dot_ = MakeCard(touchtest_, 156, 190, 10, 10);
