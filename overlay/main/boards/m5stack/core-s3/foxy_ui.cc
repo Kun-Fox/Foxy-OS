@@ -576,7 +576,7 @@ void FoxyUI::BuildSettings() {
     lv_obj_set_style_bg_color(bri_knob_, lv_color_hex(0xFFFFFF), 0);
 
     info_label_ = MakeLabel(settings_, "读取中…", 0x8A8A92);
-    lv_obj_set_pos(info_label_, 14, 186);
+    lv_obj_set_pos(info_label_, 14, 176);
     lv_obj_set_style_text_line_space(info_label_, 6, 0);
     lv_obj_set_style_text_line_space(info_label_, 2, 0);
 
